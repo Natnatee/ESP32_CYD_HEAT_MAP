@@ -1,0 +1,134 @@
+# ESP32 CYD Weather
+
+## Overview
+แดชบอร์ดตั้งโต๊ะตลาดไทย: หุ้นไทย ทองแท่งไทย น้ำมันหน้าปั๊มไทย พร้อมอากาศกรุงเทพและนาฬิกา ยอมรับข้อมูลล่าช้าได้
+
+## Goals
+LVGL 8.3.11 dashboard เต็มจอ 5 หน้า ปัดซ้าย/ขวาเปลี่ยนหน้า ไม่มี navbar; แตะเลือกหุ้น/สถานี คง circle calibration และ TFT_eSPI WiFi gate/keyboard เดิม
+
+## Hardware
+ESP32-2432S028 / HW-458 สองพอร์ต USB, ESP32-WROOM-32E, จอ 240x320 ใช้แนวนอน
+
+## Pin Map
+จอ ILI9341 และขาจอยืนยันแล้ว; ขาทัชยัง provisional ต้องยืนยันบนบอร์ดจริง ดูรูปใน README.md
+
+| Function | Pin | Device | Direction | Notes |
+|---|---|---|---|---|
+| TFT SCLK/MOSI/MISO | 14/13/12 | TFT | out/out/in | SPI |
+| TFT CS/DC | 15/2 | TFT | out | Reset ใช้ -1 |
+| Backlight | 21 | TFT | out | HIGH เปิด |
+| Touch CLK/MOSI/MISO | 25/32/39 | XPT2046 | out/out/in | SPI แยกจากจอ |
+| Touch CS/IRQ | 33/36 | XPT2046 | out/in | GPIO36 ไม่มี pull-up ภายใน |
+
+## Electrical / Safety Notes
+จ่ายไฟผ่าน USB เพียงพอร์ตเดียว GPIO เป็น 3.3V ไม่ต่อสายเพิ่มในการทดสอบนี้
+
+## Firmware Architecture
+Arduino + TFT_eSPI + XPT2046; state machine CALIBRATION (เมื่อไม่มีrecordที่ใช้ได้/สั่งc) → WIFI → DASHBOARD ที่ rotation1 คงที่ ใช้ Arduino Preferences/NVS บันทึก calibration และ WiFiที่เชื่อมสำเร็จ
+- Calibration UI: พื้นดำ วงกลมรัศมี9px มีจุดกลางรัศมี2px สีขาว→TFT_GREEN เฉพาะมุมที่รับสำเร็จ ลูกศรมนขนาดเล็กแยกอยู่นอกวงกลม ข้อความเดียว `Click center of circles` สองบรรทัด Nunito Bold26px กลางจอ ไม่มี label/progress สีอื่น
+- ระบุมุมจาก raw extrema quadrants นอก 25% ของช่วง 200..3900 (low<=1125/high>=2975) ภายใต้ orientation raw x/right y/down ไม่ใช้ลำดับแตะ รับมุมใดก่อนก็ได้; แตะกลาง/ซ้ำ/เปลี่ยน quadrant ระหว่างกดถูกปฏิเสธ
+- อ่านทุก 20 ms รับอย่างน้อย 4 samples (~80 ms) และ release 3 samples; เก็บ average สูงสุด 12 samples ตรวจ spread<=100 raw ตลอดการกด ไม่ต้อง long hold
+- fit affine จาก averaged opposing edges ทั้ง 4 มุม target ตรงกับศูนย์กลางวงกลม (25,25)/(294,25)/(294,214)/(25,214) ใช้ CORNER_X/Y และ TARGET_SPAN_X/Y ร่วมกันทั้ง fit/map/draw ไม่มีเลขพิกัดซ้ำ hardcode; determinant>=1e6, edge length>=1800 raw, closure<=180 raw, residual<=6 pixels ถ้า fit ไม่ผ่านรีเซ็ตวงกลมทั้งหมดเป็นขาว ไม่แสดงครบเขียวผิด ๆ
+- เมื่อครบ4มุมและfitผ่าน บันทึก6affine fields ลงNVS แล้วแสดงเขียว600msด้วยmillisและเข้าWiFi; บูตโหลดrecordที่validข้ามcalibration Serial cลบเฉพาะcalibrationและตัดWiFiก่อนเริ่มวงกลมใหม่ หากsave/eraseล้มเหลวแจ้งSerialแบบไม่มีsecret ผลfitยังใช้ในRAMได้
+- Affine รองรับ skew/cross-axis correction แต่การระบุชื่อมุมต้องอาศัย orientation ที่ทราบ ไม่อ้างว่า auto-detect swapped/inverted hardware จาก unordered taps ได้ ถ้า orientation ต่างต้องปรับ classifier หลังยืนยันบอร์ด
+- ทัชหน้า WiFi/dashboard ใช้ affine ที่ fit แล้ว extrapolate จากวงกลม inset ไปขอบจอและ clamp0..319/0..239 ไม่ reject valid ADC เมื่อ mapped เลยขอบ (เดิม reject นอก +-12px); คง pressure350 และ debounce เดิม (กดนิ่ง2/ปล่อย3) ยังไม่มีหลักฐานให้ลด threshold
+- Serial t toggle diagnostics rate<=10Hz raw/x/y/z/pressure_ok/mapped/down + hit/no-hit ไม่ log key characters หรือ strings; fit log coefficients/determinant/closure/residual และ rejected sample count/spread เพื่อ isolate calibration vs pressure/hitbox
+- tools/test_touch_mapping.py ทดสอบ C++ fit/map/keyboard helpers ที่ extract จาก firmware จริงด้วย g++: synthetic skew model, targets, screen edges, out-of-bounds clamp, invalid ADC/fit และ hitbox 94 ปุ่ม ไม่ใช่ hardware measurement
+- Wi-Fi UI เรียบง่ายดำ/ขาว/เทา ฟอนต์ Nunito Bold 18px: หัวข้อ WiFi, ช่อง SSID/Password และ Connect ขวาบน (Cancel เมื่อเชื่อม) ไม่มีไอคอน/helper/tiny text แสดง status สั้นเฉพาะจำเป็น
+- Keyboard letters-only QWERTY 3 แถว 10/9/7 ตัว; numbers+symbols แยก mode มี 2 ชุด ครอบคลุม ASCII printable+space ทั้งหมด ปุ่มสูง 29px กว้าง 29–44px แถวสั้นจัดกลาง; bottom controls สูง26px shift/page, 123/ABC, Space, Del
+- keyboard_key() คำนวณ rect เดียวกันทั้งวาด/ตรวจแตะ ป้องกัน hitbox ไม่ตรง หลังเปลี่ยนหน้าแป้นล้างเฉพาะ keyboard area; field truncate ตามความกว้างฟอนต์จริง ไม่ตามจำนวน chars
+- Password แสดงข้อความจริงตามคำขอ (เสี่ยง shoulder-surfing/ภาพหน้าจอ), 2.4GHz station; SSID/passphrase NVSเฉพาะconfirmed successful attempt และ `WiFi.persistent(false)` ปิดSDKpersistence ไม่ log credentials
+- เชื่อมด้วยWiFi.begin/millis timeout20s spinner/Cancel/Retry เดิม; bootและหลังcalibrationลองstored valid WiFiอัตโนมัติหนึ่งattempt ถ้าfailกลับeditableform ไม่overwriteNVS ปิดSDKauto reconnect RuntimeWiFilossกลับgateโดยไม่ลบrecord
+- Dashboard เปิดเฉพาะ WL_CONNECTED; loss กลับ gate เก็บข้อมูลใน RAM เพื่อแก้/ลองใหม่; Serial n ผ่าน gate เช่นกัน
+- Dashboard: src/dashboard.cpp ใช้ LVGL 8.3.11 custom draw event บน root เดียว สี midnight/neon/cards; Montserrat18/26 ASCII เท่านั้น ไม่ฝังฟอนต์ไทยชุดใหญ่ Nunito GFX เดิมใช้เฉพาะ setup
+- ลำดับปัดซ้าย stocks→gold→oil→weather→clock→stocks ปัดขวาย้อนกลับ เริ่ม weather หลัง Connect; Serial n หน้าถัดไป ไม่มี navbar ไม่มี tap-anywhere cycling
+- Input driver LVGL รับพิกัด affine/debounceจาก main; src/dashboard_gesture.h แยก contact เป็น TAP/LEFT/RIGHT เมื่อ release3polls เท่านั้น dx>=55px และแนวนอน>2เท่าแนวตั้ง; tap travel<=12px และ<800ms ต้องเริ่ม/จบในปุ่มเดียวกัน ช่องว่างระหว่างปุ่มไม่เลือก คง pressure350 กด2samples สำหรับ dashboard ไม่ใช้ stationary filter ที่ขัดขวาง swipe
+- ต้องปล่อย Connect ก่อน arm gesture; WiFi keyboard ยังใช้ stationary2/release3 เดิม Calibration/WiFi TFT custom และ dashboard LVGL ไม่เขียน TFT พร้อมกัน dashboard::hide ก่อน gate/calibration; lv_timer_handler เฉพาะ main และเฉพาะ dashboard worker ไม่มี LVGL/TFT
+- LVGL initialize หลังผ่าน gate ครั้งแรก ใช้ RGB565 single partial buffer320x8=5120bytes static + LVGL pool24KiB static ไม่มี full-screen buffer/clock sprite84KB ไม่มี PSRAM requirement Config src/lv_conf.h เปิดเพียง Montserrat18/26 ไม่เปิด examples/demos/themes
+- หุ้น SET/PTT/PTG/AOT/ADVANC/CPALL แตะปุ่ม3x2 ล่าสุดจาก meta.regularMarketPrice พร้อม source time Bangkok; Yahoo interval1d range1mo ใช้ timestamp+indicators.quote[0].close จริง เก็บสูงสุด32จุด ตัดnull/invalid/future/เวลาย้อน ไม่ใช้ previous close แทนราคาล่าสุด ไม่ปรับ split/FX ไม่อ้าง realtime
+- Yahoo ตรวจจริง SET ให้เพียง1จุด (แม้ขอ1mo); จอแสดง 1 real sample ไม่แต่งกราฟ เมื่อ<2 daily points จะสะสม latest ที่มี regularMarketTime เพิ่มขึ้นจริงในRAM พร้อม Observed / since boot; เมื่อ API กลับมามี>=2 daily points ใช้ประวัติ API แทน หุ้นอีก5ตัวให้22จุดในการตรวจ2026-10-14
+- ทอง96.5% BUY/SELL THB/บาทน้ำหนัก ภาพทองแท่ง original procedural; source update date พ.ศ./time ตามAPI กราฟด้านล่าง Observed SELL / since boot เก็บ successful observed samples ทุก15minในRAM32จุด (ราว8hเมื่อfetchสำเร็จต่อเนื่อง) เวลาแกนเป็นเวลาที่ตรวจพบจริง ไม่อ้างย้อนหลังจากสมาคม ไม่สร้างcurve/seeded prices; rebootล้างประวัติ เมื่อ1จุดแสดง1 real sample
+- น้ำมัน PTT / PT (บริษัทPTG) / Bangchak แตะ3tabs ใช้ stations.ptt/pt/bcp ตามAPI Gasohol95/91/E20/DieselB7 Bangkok/vicinities THB/L 12สินค้าแยกavailability bits ตรวจทั้งnameและprice; bcp dieselใช้คีย์ disel ที่APIสะกดผิดตามจริง ไม่มีfallbackไปdiesel/ปั๊มอื่น/premium ถ้าไม่มีหรือชื่อไม่ตรงใช้-- แม้สินค้าอื่นสำเร็จ
+- Station artwork เป็น stylized text wordmarks สีที่ออกแบบเองและภาพปั๊ม original ไม่ใช่ official logo ไม่มีการนำภาพ third-party ที่ไม่ทราบสิทธิ์มาใช้ ตัวเลขแดง7segmentsร่วมกับneonclock วาดผ่านLVGLไม่ใช้canvasframebuffer/fontassetใหญ่
+- WeatherคงOpen-Meteo Bangkok temperature/feels/RH/WMOcondition/wind; clock UTC+7 NTP7segments/scanlines/date/seconds อัปเดต1Hz ข้อมูลราคา invalidateเมื่อrevisionเปลี่ยนหรือ60s ไม่มีrebuild object tree
+- src/live_data.cpp worker core0 priority1 stack12288 sequential verified HTTPS; Snapshot POD portMUX copy/publish ไม่ถือlockขณะI/O Weather10min Thai gold/oil/Yahoo15min Yahoo429 cooldownทั้งhost15min ไม่burst/retryรัว
+- HTTP TCP4s/TLS5s/read3s/body wall8s cap24KiB JSON filtered6144bytes/filter1536 depth16 DNS/headerขึ้นกับframework ไม่อ้าง harddeadline; trust roots ISRG X1/GTS R4/DigiCert G2 src/api_roots.h ไม่มี insecure/redirect follow ต้องNTPvalidก่อนHTTPS
+- Fetchผิดพลาดเก็บlastgoodและtimestampเดิมพร้อม CACHED สีแดง; ถ้ายังไม่มีใช้--/UNAVAILABLE/error ถ้าอายุfetch>=2intervalsใช้STALEพร้อมsource stamp (ไม่ใช่market-open detector) Missingoilpartialresponseล้างavailabilityเฉพาะสินค้าที่ไม่มี ไม่ยืมราคาสถานีอื่น
+- Serial h: free/minheap/largest8bit block/UIstack high-water/APIstack high-water bytes หลังfetch; 0API=ยังไม่วัด ไม่logcredentials ไม่รันmonitorอัตโนมัติ
+
+## Persistent Settings
+src/saved_settings.h/.cpp ใช้Preferences namespace cyd_settings แยกkey cal/wifiเป็นcommitted single blobs; VERSION1/magic/length/CRC32 (ตรวจcorruption ไม่ใช่encryption) SingleSSID/passwordblobป้องกันpairคนละattempt ไม่มีmulti-key partial update ไม่มีPreferences.clear/autoeraseบนordinaryboot
+Cal40bytes: CYDC/version/rotation/reserved/profile + IEEE754binary32 LE6fields + CRC32 ไม่มีcompilerpadding บูตตรวจfinite/ADCcornerbounds/axispositive/determinant>=1e6/edge>=1800 และprofilefingerprintจากresolution/targetcoordinates/touchpins/rawrange/rotation ไม่เขียนตอนfithelperหรือload เขียนจากaccept_cornerหลังfinalfitผ่านเท่านั้น
+WiFi13..107bytes: CYDW/version/ssidlength/passwordlength/reserved + SSID/passwordASCIIbytes + CRC32; SSID1..32 password0หรือ8..63 ตรวจembeddedNUL/control chars/size/version ก่อนใช้ SaveเฉพาะconnectingและWL_CONNECTEDที่SSIDตรงattempt ขณะconnectingแก้fieldsไม่ได้ compareserializedblobก่อนputBytesเพื่อไม่writeunchanged success; failed/Cancel/lossไม่write
+Serial cforgetcalibrationอย่างเดียวแล้วทำworkflow; Serial wforgetWiFiอย่างเดียว disconnect/clearRAMfields/returnformเมื่อcalibrationvalid มิฉะนั้นคงcircleจนfitผ่าน Save/erasefailแจ้งgenericSerial ไม่มีcredentials ไม่ลบdataอัตโนมัติ
+NVSplaintext ไม่มีhardware flash/NVS encryption ผู้เข้าถึงflashอาจกู้passwordได้ wlogicalkeydeleteไม่ใช่securewipe; passwordvisibleตามคำขอ SavedcredentialsโหลดจากruntimeNVSเท่านั้นไม่ฝังsource/ไม่มีsecretfiles APIhistoryยังRAMเท่านั้น
+Host tools/test_saved_settings.py compileactualcodec+extractedmainfit/save/startup/timeout/loss/forgetflowsกับPreferences/WiFi mocks; corruption/truncation/versions/profile/length/open/maxcredentials/nochangedwrites/nofailedwrites/saveerasefail และnosecretlogs ไม่ใช่physicalpower-cut/NVStest
+
+## Libraries
+LVGL 8.3.11, TFT_eSPI 2.5.43, XPT2046_Touchscreen 1.4, ArduinoJson 6.21.5;  เปิด LOAD_GFXFF เพื่อใช้ Nunito Bold 18/26px จาก Google Fonts (OFL 1.1) ASCII bitmap src/ui_fonts.h (~4.8KB) สำหรับ setup ไม่ต้องโหลดฟอนต์ผ่านเครือข่าย; LVGL เป็น runtime dependency ใหม่ของ dashboard
+ต้นฉบับ assets/fonts/Nunito.ttf + OFL.txt; tools/generate_ui_fonts.py ใช้ Python/Pillow เฉพาะ regeneration (ไม่ใช่ build requirement)
+
+## Build & Upload
+ดู README.md ค่า default cyd_ili9341; cyd_st7789 เก็บไว้สำหรับ build compatibility เท่านั้น (บอร์ดจริงจอขาว) ไม่สำรอง firmware ตามคำขอผู้ใช้
+
+## Current State
+LVGL UI build ผ่านบน cyd_ili9341: flash1,151,397bytes87.8% / staticRAM85,708bytes26.2% ในapp partitionเดิม1310720bytes ไม่แก้partition/flash capacity ค่า esp32dev4MB เป็นconfigเท่านั้น ยังไม่อ่านขนาดflashจริงจากบอร์ด ไม่ต้องเลือกnoOTAเพื่อให้buildนี้ผ่าน
+ผลตรวจHTTPS2026-10-14: 9URLs HTTP200+embeddedCA+schemas ผ่าน 12oilproductsครบ; SET history1จุด หุ้นอีก5ตัว22จุด
+Host tests: tools/test_touch_mapping.py actual affine/94keyboardrects; tools/test_live_data.py actual C++ parsers/historyring/stale/debounce/gesturegate; tools/test_dashboard_render.py actual pinnedLVGL native render/partialflushbounds/fontwidths/tab/swipe/setupownership ผ่าน previews .pio/host_ui เป็น synthetic fixtures ไม่ใช่ live prices
+ยังไม่flash/monitor/commit/แก้vault UI/pressure/swipe speed/สี RGB565/heap fragmentation/stack/TLS ต้องยืนยันบนบอร์ด ดูhardware_lib/READMEสำหรับตัวเลขbuildล่าสุดและขั้นตอนตรวจ
+
+## loopTask stack-canary incident (2026-10-15)
+ผู้ใช้พบ Guru Meditation: Stack canary watchpoint triggered (loopTask) หลัง Connect/บูตด้วยsaved config ตรวจและdecodeก่อนrebuild ยืนยัน SHA prefixตรงกับที่ผู้ใช้รายงาน; local ELF SHA256เต็ม: `9779515cb32b5beeb3c9df6774bf07dee994c0907e139d9684d236b74c16e916` ไม่ใช้ELFใหม่ตีความaddressเก่า เก็บoriginal ELF+decodedtraceในignored `.pio/crashes/9779515cb32b5bee/`
+
+Backtrace top→caller จาก xtensa-esp32-elf-addr2line -a -f -C -i -p:
+
+| PC | Function / original source location |
+|---|---|
+| 0x400eaadd | lv_area_copy inlined into draw_bg, lv_draw_sw_rect.c:105 (lv_area.h:113) |
+| 0x400ebf1d | lv_draw_sw_rect, lv_draw_sw_rect.c:75 |
+| 0x4018905d | lv_draw_rect, lv_draw_rect.c:66 |
+| 0x400d290d | dashboard::box, dashboard.cpp:51 |
+| 0x400d2fb1 | dashboard::draw, dashboard.cpp:250 |
+| 0x400dba46 | event_send_core, lv_event.c:467 |
+| 0x400dbaa2 | lv_event_send, lv_event.c:75 |
+| 0x400e194d | lv_obj_redraw, lv_refr.c:148 |
+| 0x400e1a19 | refr_obj, lv_refr.c:974/968 |
+| 0x400e1d52 | refr_obj_and_children, lv_refr.c:856 |
+| 0x400e1e83 | refr_area_part, lv_refr.c:791 |
+| 0x400e2a77 | refr_area → refr_invalid_areas → _lv_disp_refr_timer, lv_refr.c:680/618/325 |
+| 0x400e6b18 | lv_timer_exec → lv_timer_handler, lv_timer.c:313/109 |
+| 0x400d3a03 | dashboard::tick, dashboard.cpp:325 |
+| 0x400d7069 | loop, main.cpp:554 |
+| 0x400f757d | loopTask, Arduino main.cpp:50 |
+
+หลักฐาน root cause: Xtensa objdump original `loop` entry a1,0xd70=3440bytes และ `dashboard::tick`/`show` entry a1,0xcb0=3248bytes; Snapshot symbol size0xc90=3216bytes ค่าชั่วคราวจาก return-by-value + localstatsในbranch h ทำให้จองframeตลอดloop แม้ไม่กดh ขณะrenderมีloop+tickอยู่พร้อมกัน6688bytes ยังไม่รวมLVGLchain บนArduino defaultloop stack8192bytes UserA1span0x3ffb2290−0x3ffb02f0=8096bytes สอดคล้องstackหมด จุดlv_area_copyเป็นที่ตรวจพบ ไม่ใช่หลักฐานว่าNVSเสีย
+LVGL event/render chainนี้เป็นการวาดปกติ ไม่พบcallbackrender recursionผิดปกติ: drawเรียกprimitive ไม่เรียกlv_timer_handler/lv_event_sendซ้ำ ไม่มีเหตุให้ตัดUIหรือเพิ่มstackเป็นวิธีหลัก
+
+แก้ด้วย `copy_snapshot(Snapshot&)` copyตรงลงstatic UI-owned dataใต้portMUX ไม่มีSnapshotby-value/local/temporariesอีก workerยังเป็นผู้เขียนsharedคนเดียว UIเป็นผู้เขียนdisplaydataคนเดียว และไม่มีlockระหว่างnetwork/render Serialhอ่านDiagnosticsขนาด12bytesใต้lock ไม่อ่านhistoryทั้งหมด ยังคงloop/APIstack high-water bytes ไม่logcredentials ไม่แตะsaved_settings/schema/NVS/partition
+
+| Compiled Xtensa frame | Original | Fixed |
+|---|---:|---:|
+| loop | 3440 | 240 |
+| dashboard::tick | 3248 | 32 |
+| dashboard::show | 3248 | 32 |
+| copy_snapshot | — | 32 |
+| diagnostics | — | 48 |
+
+Fixed ELF SHA256 `8d0c0911813448a5d1e46793c29f98823caab4ddbe2ebb12fb04e11fb6c47054` Stack allocationยัง8192bytes ไม่มีheap/staticbufferเพิ่ม RAM85,708bytesเท่าเดิม Workerstackยัง12288bytes (compilerworkerframe2848bytes ไม่ใช่UI; peakTLSยังต้องวัดด้วยh)
+Buildเปิด -fstack-usage / -Wframe-larger-than=2048 และpost-link tools/check_stack_frames.py ตรวจทุกmain/dashboardframe<=1024 copy/diagnostics<=256 ตรวจrequiredsymbols+missingreportsแล้วfailbuild ไม่มีการลดthresholdเพื่อซ่อนregression Self-testปฏิเสธoriginal3440byteframe Hosttest_live_dataเพิ่มactualcopy/diagnosticsและconcurrentpublish/copyผ่านmockportMUX พร้อมAPItypeguard ไม่ใช่หลักฐานruntime8KBstackผ่านจริง
+ต้องให้ผู้ใช้ทดสอบsavedboot/manualConnect/all5pages/Serialh/TLS/reconnectจริงหลังติดตั้งรุ่นแก้ ตรวจloop-stack-min-free/API-stack-min-freeเป็นค่าต่ำสุดตั้งแต่taskเริ่ม (API0ยังไม่วัด) ไม่ใช่freeheap รอบแก้ไม่flash/erase/monitor/commit/vaultและไม่ลบsavedconfig
+
+## Open Questions
+Flash capacityจริง TBD ไม่ถือว่าconfig4MBเป็นhardware evidence; touchorientationและpressureยังต้องยืนยันบนบอร์ดจริง คงpinmap/rotation/calibrationเดิม
+APIunofficial/delayed ไม่มีSLA อาจเปลี่ยนschema/root/429; goldไม่มีhistoricalAPIในendpointที่ใช้อยู่ SETcoverageจำกัดตามการตรวจจริง ไม่มีราคาตลาดโลก/การแปลงหน่วย/ข้อมูลจำลองในfirmware
+
+## Issue Log
+2026-10-15: Decode SHA-matched loopTask canary → oversizedby-valueSnapshot frames แก้copyintoUIstatic+smallDiagnostics คง8KBloopstack/NVS เพิ่มXtensaframeguardและconcurrentsnapshottests Build/hosttestsผ่าน ต้องยืนยันfixบนhardware
+2026-10-14: คำขอล่าสุดเพิ่มPreferences/NVS calibration+successfulWiFi versioned/validated blobs ข้ามcalibrationและauto-connectเมื่อrecordvalid เพิ่มcลบcal/wลบWiFiและhoststorageflowtests Build/4hosttestsผ่าน ไม่flash/monitor/commit/vault (supersedesRAM-only/every-boot notesด้านล่าง)
+2026-10-14: ST7789 จอขาว; ILI9341 แสดงผล สีและสัดส่วนถูกต้องตามผู้ใช้ ตั้ง default เป็น cyd_ili9341
+2026-10-14: เพิ่ม Neon Desk UI, Wi-Fi gate/keyboard และ Bangkok NTP; ไม่เพิ่ม dependency ไม่บันทึก credentials และไม่แก้ vault
+2026-10-14: เคยเปลี่ยนเป็น WiFi-first ตามคำขอก่อนหน้า; คำขอล่าสุดเปลี่ยนเป็นคาลิเบรตทุกบูตแบบดำ/ขาว ข้อความเดียว ลูกศรเขียวตามมุม raw ที่รับสำเร็จ แล้ว WiFi หลัง 600 ms ไม่ใช้ Preferences และคง UI WiFi/dashboard เดิมในรอบนั้น
+2026-10-14: ปรับลูกศร rounded และ Nunito Bold; ลด WiFi ให้เหลือ fields/buttons/status จำเป็น พร้อมแยก letters/numbers+symbols keyboard ปุ่มใหญ่ขึ้น ไม่เปลี่ยน dashboard/calibration logic
+2026-10-14: ผู้ใช้รายงานปุ่มริมจอกดยาก ตรวจโค้ดพบ hitbox ใช้ helper เดียวกับวาด แต่เป้าลูกศรใหญ่/พิกัด fit เป็นปลายทำให้ตำแหน่งแตะกำกวม (สาเหตุจริงบนบอร์ดยังเป็น inference) และ map reject นอก+-12px เปลี่ยนเป็นวงกลมศูนย์กลางชัดเจน inset25px, shared target constants, edge extrapolation/clamp และ diagnostics/regression; แสดง password จริงตามคำขอ
+
+2026-10-14: Major UI ที่ผู้ใช้อนุมัติ: LVGL8.3 swipe/tap dashboard ตลาดไทย/กราฟจริง/ทองobservedhistory/12oilproducts+BCPdisel คงsetupและpartition เพิ่มhostLVGLrender tests ไม่flash/monitor/commit/vault

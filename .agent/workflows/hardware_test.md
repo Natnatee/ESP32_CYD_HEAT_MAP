@@ -1,0 +1,29 @@
+# UI / hardware validation
+
+1. Build: `pio run -e cyd_ili9341` (default); ST7789 ใช้ทดสอบ compile compatibility เท่านั้น บอร์ดจริงจอขาว
+2. `pio device list` ตรวจพอร์ตจริง ก่อน upload ตาม README (เขียนทับ firmware เดิม)
+3. เมื่อไม่มีcalibrationที่ใช้ได้หรือสั่งSerial `c` ต้องเห็นพื้นดำ วงกลมขาวมีจุดกลาง4มุม (25,25)/(294,25)/(294,214)/(25,214) ลูกศรมนเล็กอยู่นอกวงกลม ข้อความ `Click center of circles` Nunito Bold26px สองบรรทัดตรงกลาง ทดลองแตะกลาง/มุมซ้ำ/ลาก: ต้องไม่เติมมุมอื่น แตะจุดกลางวงกลม ไม่ใช่ลูกศร นิ่งประมาณ80ms แล้วปล่อยตามลำดับใดก็ได้ เฉพาะมุมที่สำเร็จเป็นเขียว ครบและ geometry ผ่านรอ 600 ms แล้ว WiFi; ถ้า fit ผิดกลับขาวทั้งหมด ตรวจ Serial ถ้าไม่ตอบสนอง/มุมเขียวผิดตำแหน่งให้ยืนยัน pin/rotation1 orientation raw ก่อน ไม่ใช่ปรับตามลำดับแตะ
+4. หน้า WiFi ต้องไม่มีไอคอน/helper จิ๋ว กรอก SSID/Password ด้วย Nunito Bold18px keyboard letters-only 3 แถว ตรวจ ABC/abc shift, 123 แยก numbers/symbols, #+= เปิดชุดสัญลักษณ์เพิ่ม, ABC คืน letters, Space/Del และ password แสดงข้อความจริง (ระวังภาพหน้าจอ/ผู้อื่นเห็น) ตรวจปุ่ม/ช่องทุกมุมให้ตรง hitbox เครือข่าย2.4GHz เท่านั้น Connect/Cancel อยู่ขวาบน ข้อผิดพลาดต้องอ่านได้และไม่ล้นจอ
+5. ทดลองรหัสผิด/Cancel: timeout20sและแก้ฟอร์มได้ ต้องไม่เปิดdashboardก่อนWL_CONNECTED/SSIDตรงattempt และไม่เขียนทับsuccessful credentialsเดิม; rebootต้องลองlastgoodที่บันทึก ไม่ใช่ค่าที่fail
+6. เมื่อเชื่อมเริ่มหน้าอากาศ LVGL ไม่มีnavbar ปล่อยConnectก่อนปัดซ้าย/ขวาวน5หน้า หรือSerial `n`; แตะเลือก6หุ้น/3สถานีเท่านั้น กดค้าง/noise1–2polls/ปัดแนวตั้งไม่เลือกผิด Swipeบนtabsต้องเปลี่ยนหน้าอย่างเดียว ไม่เลือกtab การแตะต้องเริ่ม/จบในปุ่มเดียวกัน ช่องว่างไม่เป็นhit
+7. นาฬิกาแสดง--:--ก่อนได้NTP แล้วBangkokUTC+7 seven-segment/scanlines/date18px/seconds26px อัปเดต1Hzผ่านLVGL8rowspartialbuffer ไม่มีsprite84KBเดิม
+8. ปิด router: ต้องกลับ WiFi gate และแก้ข้อมูลได้ เปิด router แล้ว CONNECT ใหม่
+9. Rebootหลังcalibration/WiFiสำเร็จ: ข้ามวงกลมและauto-connectด้วยspinner/Cancel/20stimeout เมื่อrouterปิดกลับฟอร์มพร้อมsavedSSID/passwordที่แก้ได้ ไม่ลบrecord คงrotation1 Serial `c`ลบเฉพาะcalibrationและทำวงกลมใหม่ ครบแล้วลองsavedWiFi; `w`ลบเฉพาะWiFi disconnect/clearfields/กลับฟอร์ม (ถ้าcalยังinvalidต้องทำวงกลมก่อน) Rebootหลังwต้องไม่auto-connectจนเชื่อมและsaveใหม่
+10. ตรวจริมซ้าย/ขวาคีย์บอร์ดและ Del ด้านล่าง หากกดยากเปิด Serial `t` แล้วแตะตำแหน่งทดสอบไม่ใช่ credentials ตรวจ raw/z/pressure_ok/xy/hit log เปรียบเทียบกับพิกัดปุ่ม แยก map offset vs pressure/hitbox; Serial `c` ทำใหม่ และ `t` ปิดเมื่อจบ
+11. รัน `python tools/test_touch_mapping.py`, `python tools/test_live_data.py`, `python tools/test_saved_settings.py`, `python tools/test_dashboard_render.py` ทดสอบactualC++geometry/parser/history/stale/gesturegateและactualLVGLrender/fontwidths/flushbounds/tab/ownership Buildก่อนเพื่อได้ArduinoJson6.21.5/LVGL8.3.11 ใช้Python/gcc/g++; Pillowoptionalสำหรับpreview (syntheticfixtureไม่ใช่live)
+12. ตรวจSerial/repoไม่มีrealSSID/password ใช้Preferences namespace cyd_settings cal/wifi singleversioned/CRC blobs โหลดvalidatedก่อนข้ามsetup; savecalหลังfinalfit4มุมเท่านั้น saveWiFiหลังconfirmedWL_CONNECTEDเท่านั้น ไม่writeunchanged successful values เปิดSDKpersistent(false) ไม่ใช้Preferences.clear
+    - ทดสอบstorageว่าง/corrupt/truncated/unknownversion/profile mismatch ต้องfallbackcircle/form ไม่ใช้partialrecord ไม่eraseอัตโนมัติ
+    - ทดสอบpower-cutระหว่างsaveบนบอร์ดจริงอย่างระวัง Hostmocksไม่ยืนยันphysicalNVS atomicity ต้องได้validrecordเดิม/ใหม่หรือfallback ไม่จับคู่SSID/passwordคนละattempt
+    - NVSplaintext ไม่ได้hardwareencrypted ผู้ที่อ่านflashอาจกู้passwordได้ wlogicaldeleteไม่ใช่securewipe Passwordยังvisibleตามคำขอ
+    - NVSwrite/erasefailต้องแจ้งgenericSerial ไม่มีsecret UIบูตนี้ยังใช้ผลfit/connectionได้ แต่บูตหน้าอาจไม่มีค่าหรือค่าเก่ายังคงอยู่
+
+13. รัน `python tools/verify_apis.py` (requests) ตรวจ9URLsด้วยrootCAเดียวกับfirmware อย่ารันรัว Yahoounofficialอาจ429 แม้ใช้Mozilla/5.0; ดูschema/หน่วย/ข้อจำกัดREADME
+14. บนบอร์ด NTPสำเร็จก่อนHTTPS ข้อมูลจริงทยอยเข้าด้วยworkerโดยทัชยังresponsive weather10min/finance15min; ตรวจAs of source timestamp ทองไทยพ.ศ./oilค.ศ./YahooเวลาBangkok
+15. ตรวจSETpoints/PTT/PTG/AOT/ADVANC/CPALL THB กราฟdailyจริง22pointsสำหรับ5หุ้น (SETAPIตรวจให้1จุด ให้เห็น1real sample/observedfallback ไม่แต่งย้อนหลัง) ทอง96.5%BUY/SELL THB/bahtweight+ObservedSELLsinceboot32samples น้ำมันPTT/PT(PTG)/Bangchak gasohol95/91/E20/DieselB7 THB/L คีย์bcp.disel ไม่ใช้premium/ปั๊มอื่นแทนmissing ต้องแสดง--
+16. ตัดอินเทอร์เน็ตโดยWiFiยังเชื่อม: ไม่ค้างUI ข้อมูลเดิมต้อง CACHED/error ไม่มีค่าใช้--/UNAVAILABLE; refreshพลาด>=2intervalsเห็นSTALE กรณี429ต้องcooldownYahooทั้งชุด15min ไม่มีราคาจำลอง
+17. ใช้Serial `h` ตรวจfree/minheap/largest8bitblock/UIstack/APIstack high-water bytes ขณะโหลดTLS/reconnectหลายรอบ (API0=ยังไม่วัด) StaticRAMรวมLVGLpool24KiB+drawbuffer5KiBแต่ไม่รวมTLS/body24KiB/JSON6KiB/filter1.5KiB/workerstack12KiB ไม่ใช้clock84KBแล้ว ยังไม่ยืนยันบนhardware ไม่เปลี่ยนpartitionและไม่ถือว่าesp32dev4MBconfigยืนยันflashcapacityจริง
+
+18. Regressionstack: หลังbuildรัน `python tools/check_stack_frames.py --self-test` ตรวจXtensa.suของmain/dashboard<=1024bytes และcopy_snapshot/diagnostics<=256bytes post-linkguardบังคับในbuild ไม่มีการเพิ่มloopstack8KBหรือSnapshottemporaryบนstack Runtimeต้องให้ผู้ใช้ตรวจsavedboot/manualConnect/5หน้า/TLS/Serialh/reconnectหลายรอบ ค่าขณะhเป็นloop-stack-min-free/API-stack-min-free bytesขั้นต่ำตั้งแต่taskเริ่ม ไม่ใช่currentheap API0=ยังไม่วัด Guardรายframeไม่รับรองรวมcall-depth
+19. หากGuru/Canaryอีก ห้ามrebuildก่อนเก็บELFและตรวจSHAให้ตรงกับcrash แล้วdecodeด้วยinstalledxtensaaddr2line -a -f -C -i -p บันทึกPC/A1/phase/stack-watermarkโดยไม่เก็บSSID/password OriginalSHA9779515cb32b5beeถูกเก็บไว้ .pio/crashes/9779515cb32b5bee/ ดูdecodeและเหตุผลในproject.md ไม่ลบNVSหรือเพิ่มstackแบบเดาก่อนisolate
+
+ไม่มีการ flash/monitor อัตโนมัติในรอบ implement UI/API อย่าเปิด monitor พร้อม upload เพราะพอร์ตอาจถูกล็อก ไม่แก้ vault
