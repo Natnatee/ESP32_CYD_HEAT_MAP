@@ -45,9 +45,9 @@ Dashboard LVGL8.3.11 ตลาดไทย5หน้า ปัดซ้าย/�
 
 SingleRGB565320x8buffer5120bytes + LVGL24KiBpool static ไม่มีfullscreensprite/PSRAM ไม่ใช้GFXfontเป็นLVGLfont Montserrat18/26builtinเท่านั้น initializeหลังgate mainเป็นผู้เรียกLVGL/TFTทั้งหมด hideก่อนsetup หยุดtimer/flushขณะsetup Workerไม่มีจอ/ทัช
 
-Latest build cyd_ili9341: flash1,151,397/1,310,720bytes (87.8%), staticRAM85,708/327,680bytes (26.2%); ไม่รวมTLS/body24KiB/JSON6KiB/filter1.5KiB/workerstack12KiBและruntimeheap ไม่เคยตรวจflashcapacityจริง ค่าesp32dev4MBเป็นconfig ไม่เปลี่ยนpartition/ไม่เลือกnoOTA/ไม่flash
+Latest build cyd_ili9341: flash1,153,989/1,310,720bytes (88.0%), staticRAM85,716/327,680bytes (26.2%); ไม่รวมTLS/body24KiB/JSON6KiB/filter1.5KiB/workerstack12KiBและruntimeheap ไม่เคยตรวจflashcapacityจริง ค่าesp32dev4MBเป็นconfig ไม่เปลี่ยนpartition/ไม่เลือกnoOTA/ไม่flash
 
-APIverified2026-10-14: 9URLs HTTP200withfirmwareCA YahooSET1historypoint vsอีก5หุ้น22points; oil12productsครบ keysptt/pt/bcp BCPdiesel=disel ไม่ทดแทนmissing; goldobservedSELL RAM32points/15minไม่แต่งย้อนหลัง StocksTHB/SETpoints goldTHB/bahtweight oilTHB/L ไม่มีราคาตลาดโลกแล้ว อ่านREADME/projectสำหรับcoverageและrate limits
+APIverified2026-10-14: 9URLs HTTP200withfirmwareCA YahooSET1historypoint vsอีก5หุ้น22points; oil12productsครบ keysptt/pt/bcp BCPdiesel=disel ไม่ทดแทนmissing; goldobservedSELL collector RAM32points/15minยังอยู่ แต่หน้าทองตัดกราฟออกแล้ว ใช้ราคา7segments44px/UPDATED26pxและfullsource stamp18px StocksTHB/SETpoints goldTHB/bahtweight oilTHB/L ไม่มีราคาตลาดโลกแล้ว อ่านREADME/projectสำหรับcoverageและrate limits
 
 Serial hอ่านmetadata12bytesเท่านั้น ให้free/minheap/largest8bit/loop-stack-min-free/API-stack-min-free (high-waterเป็นminimumตั้งแต่taskเริ่มในหน่วยbytes; 0APIยังไม่วัด) ให้ผู้ใช้ตรวจระหว่างTLS/reconnect/runtimeหลายรอบ ไม่เปิดmonitorให้เอง HostactualLVGLrenderpool/partialbounds/fontmetrics testsไม่ใช่hardwareheapmeasurement
 
@@ -56,4 +56,6 @@ NVSเป็นplaintext ไม่เปิดflash/NVSencryption Physicalflasha
 
 2026-10-15: ผู้ใช้รายงานloopTaskcanaryหลังConnect/savedboot ELFprefix9779515cb32b5beeยืนยันตรงก่อนdecode จุดเกิดLVGLdraw_bg แต่rootcauseเป็นloop3440+tick3248bytesจากSnapshot3216byteby-value บนstack8192 แก้copy_snapshotตรงลงUIstatic+smallDiagnostics ไม่เพิ่มstack/heap/staticRAM ไม่แตะNVS/partition ค่าXtensaframeใหม่loop240 tick/show32 copy32 diagnostics48bytes BuildpostlinkguardUI<=1024/copymetadata<=256 +framewarning2048 รายละเอียดchain/PC/SHAในproject.md Workercompilerframe2848บน12KBstackยังต้องวัดpeakTLSจริง
 
-ยังไม่ได้ทดสอบรุ่นแก้stackบนบอร์ดจริง หากไม่มีtouchresponseให้ตรวจVSPIpinmapก่อน หากแตะไม่ตรงให้วัดraw/ตรวจแกนแล้วคาลิเบรตใหม่ คงGPIO36ไม่มีinternalpull-up ไม่มีการแก้pinmap/pressureแบบเดา
+2026-10-15 UIpolish: ตราPTTflameblue/red/PTgreencircle/Bangchakgreenorangeleafเป็นLVGLhand-drawn approximationsบนpump ไม่ฝังbitmapasset/officialSVG ตรวจvisualrefsPTT/Bangchakผ่านHTTPS PTGSSL/TLSล้มเหลวจึงใช้userbriefโดยไม่bypassverify Weather100msเฉพาะpage3visible/knownvalidWMO: suns/clouds/rain/snow/fog/lightning/hail clip107x84 animation-onlydirtyflushรวมLVGL5pxmargin117x94สูงสุด (data/page/statuschangesยังfullredrawได้) ไม่paintบนlabels fastpathcard/artข้ามfloat/date/textformatต่อanimation-onlyframe (nativecounterทดสอบ) ไม่มีper-frameappheap/Snapshottemporary/handlerreentry ใช้Montserrat18/26เดิม Buffers/stack/NVSเดิมเพิ่มเพียง8staticbytesสำหรับanimationstate NativeLVGLmotion/dirtypixel/pool/font testsผ่าน ไม่ใช่hardwareFPS/heapmeasurement
+
+ยังไม่ได้ทดสอบรุ่นแอนิเมชัน/แก้stackบนบอร์ดจริง หากไม่มีtouchresponseให้ตรวจVSPIpinmapก่อน หากแตะไม่ตรงให้วัดraw/ตรวจแกนแล้วคาลิเบรตใหม่ คงGPIO36ไม่มีinternalpull-up ไม่มีการแก้pinmap/pressureแบบเดา

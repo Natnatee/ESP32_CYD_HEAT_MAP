@@ -38,14 +38,19 @@ write_if_changed(OUT / "TFT_eSPI.h", """#pragma once
 #include <cassert>
 struct TFT_eSPI {
     uint16_t framebuffer[320*240]{};
-    int x=0,y=0,w=0,h=0,flushes=0;
+    int x=0,y=0,w=0,h=0,flushes=0,total_pixels=0;
+    int min_x=320,min_y=240,max_x=-1,max_y=-1;
+    void reset_capture(){total_pixels=0;min_x=320;min_y=240;max_x=max_y=-1;}
     void startWrite() {} void endWrite() {}
     void setAddrWindow(int ax,int ay,int aw,int ah) {
         assert(ax>=0 && ay>=0 && ax+aw<=320 && ay+ah<=240);
+        assert(aw*ah<=320*8); // Same bounded partial buffer as firmware.
         x=ax;y=ay;w=aw;h=ah;
     }
     void pushColors(uint16_t *pixels,int count,bool) {
-        assert(count==w*h); ++flushes;
+        assert(count==w*h); ++flushes;total_pixels+=count;
+        if(x<min_x)min_x=x;if(y<min_y)min_y=y;
+        if(x+w-1>max_x)max_x=x+w-1;if(y+h-1>max_y)max_y=y+h-1;
         for(int i=0;i<count;++i) framebuffer[(y+i/w)*320+x+i%w]=pixels[i];
     }
 };
@@ -55,7 +60,16 @@ harness = r'''
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <utility>
+#include <cstdarg>
+int formatted_values=0;
+int host_snprintf(char *out,size_t size,const char *format,...) {
+    ++formatted_values;va_list args;va_start(args,format);
+    const int result=vsnprintf(out,size,format,args);va_end(args);return result;
+}
+#define snprintf host_snprintf
 #include "dashboard.cpp"
+#undef snprintf
 uint32_t host_millis=0;
 live_data::Snapshot fixture;
 namespace live_data {
@@ -79,6 +93,67 @@ void frame(TFT_eSPI &tft,int page,const char *variant="data") {
         fwrite(rgb,1,3,file);
     }
     fclose(file);
+}
+uint32_t image_hash(const TFT_eSPI &tft) {
+    uint32_t hash=2166136261U;
+    for(uint16_t pixel:tft.framebuffer)hash=(hash^pixel)*16777619U;
+    return hash;
+}
+int logo_pixels(const TFT_eSPI &tft,uint32_t rgb) {
+    const auto color=lv_color_hex(rgb).full;int count=0;
+    for(int y=91;y<150;++y)for(int x=22;x<82;++x)count+=tft.framebuffer[y*320+x]==color;
+    return count;
+}
+void test_weather(TFT_eSPI &tft) {
+    using dashboard::WeatherScene;
+    for(auto pair:{std::pair<int,WeatherScene>(0,WeatherScene::CLEAR),{1,WeatherScene::MAINLY_CLEAR},
+                  {2,WeatherScene::PARTLY_CLOUDY},{3,WeatherScene::OVERCAST},{45,WeatherScene::FOG},
+                  {48,WeatherScene::FOG},{51,WeatherScene::DRIZZLE},{57,WeatherScene::DRIZZLE},
+                  {61,WeatherScene::RAIN},{67,WeatherScene::RAIN},{82,WeatherScene::RAIN},
+                  {71,WeatherScene::SNOW},{77,WeatherScene::SNOW},{86,WeatherScene::SNOW},
+                  {95,WeatherScene::THUNDER},{96,WeatherScene::THUNDER},{99,WeatherScene::THUNDER}})
+        assert(dashboard::weather_scene(pair.first)==pair.second);
+    for(int code:{-1,4,44,52,60,70,78,83,94,97,100})assert(dashboard::weather_scene(code)==WeatherScene::UNKNOWN);
+    for(const char *text:{"Freezing drizzle","Freezing rain","Rain showers","Snow showers","Hail / thunder","Unknown WMO","Thunderstorm"})fits(text,164);
+    static uint16_t previous[320*240];
+    auto &weather=fixture.readings[live_data::WEATHER];
+    for(int code:{0,1,2,3,45,51,61,71,95,99}) {
+        weather.valid=true;weather.values[3]=code;++fixture.revision;
+        const std::string variant="wmo-"+std::to_string(code);
+        frame(tft,3,variant.c_str());
+        memcpy(previous,tft.framebuffer,sizeof(previous));
+        const uint32_t first=image_hash(tft);
+        bool moved=false;
+        for(int i=0;i<24;++i) {
+            const int formats_before=formatted_values;
+            tft.reset_capture();host_millis+=100;dashboard::tick(host_millis);
+            assert(formatted_values==formats_before); // Animation path must not reformat prices/weather text.
+            // LVGL 8.3 public invalidation adds a 5px transform-safety margin on each side.
+            if(tft.total_pixels<=0 || tft.total_pixels>117*94)
+                fprintf(stderr,"Animation code=%d step=%d frame=%u pixels=%d bounds=%d,%d..%d,%d revision=%u\n",code,i,unsigned(dashboard::weather_frame),tft.total_pixels,tft.min_x,tft.min_y,tft.max_x,tft.max_y,dashboard::data.revision);
+            assert(tft.total_pixels>0 && tft.total_pixels<=117*94);
+            assert(tft.min_x>=191 && tft.max_x<=307 && tft.min_y>=43 && tft.max_y<=136);
+            moved=moved || image_hash(tft)!=first;
+            for(int y=0;y<240;++y)for(int x=0;x<320;++x)
+                if(x<196 || x>302 || y<48 || y>131)assert(tft.framebuffer[y*320+x]==previous[y*320+x]);
+        }
+        assert(moved); // Allow quantized cloud drift to pause briefly at each turning point.
+    }
+    // Steady frames do not leak LVGL pool allocations.
+    lv_mem_monitor_t before{},after{};lv_mem_monitor(&before);
+    for(int i=0;i<200;++i){host_millis+=100;dashboard::tick(host_millis);}
+    lv_mem_monitor(&after);assert(after.used_cnt==before.used_cnt && after.free_size==before.free_size);
+    weather.values[3]=97;frame(tft,3,"unknown-wmo");tft.reset_capture();
+    const auto frozen=dashboard::weather_frame;
+    host_millis+=400;dashboard::tick(host_millis);assert(tft.total_pixels==0 && dashboard::weather_frame==frozen);
+    weather.valid=false;frame(tft,3,"no-weather");tft.reset_capture();
+    host_millis+=400;dashboard::tick(host_millis);assert(tft.total_pixels==0 && dashboard::weather_frame==frozen);
+    weather.valid=true;weather.values[3]=61;
+    frame(tft,0,"stocks-animation-paused");tft.reset_capture();
+    host_millis+=400;dashboard::tick(host_millis);assert(tft.total_pixels==0 && dashboard::weather_frame==frozen);
+    frame(tft,3,"rain-visible");
+    dashboard::hide();tft.reset_capture();host_millis+=1000;dashboard::tick(host_millis);
+    assert(tft.total_pixels==0); // Setup owns TFT; animation must stop completely.
 }
 void tap(int x,int y) {
     dashboard::touch(true,x,y);host_millis+=100;dashboard::touch(false,x,y);
@@ -104,9 +179,19 @@ int main() {
     fits("FUEL / THB PER L",296,true);fits("BANGKOK / UTC+7",296,true);
     for(auto text:{"SET","PTT","PTG","AOT","ADVANC","CPALL","PT / PTG","Bangchak"})fits(text,98);
     for(auto text:{"Gasohol 95","Gasohol 91","Diesel B7"})fits(text,109);
-    for(auto text:{"CACHED 14/10/2569 15:46","CACHED As of 14/10/2026","UNAVAILABLE / error -24","Observed SELL / since boot"})fits(text,296);
+    for(auto text:{"CACHED 14/10/2569 15:46","CACHED As of 14/10/2026","UNAVAILABLE / error -24"})fits(text,296);
     fits("14/10 23:59",136);fits("99999",126,true);fits("1575.88",170,true);
     for(int i=0;i<5;++i)frame(tft,i);
+    fits("/ baht wt.",99);fits("UPDATED",98);fits("15:46",96,true);fits("PT",46,true);
+    gold.history_count=0;frame(tft,1,"no-gold-history");const auto no_history=image_hash(tft);
+    gold.history_count=32;frame(tft,1,"unused-gold-history");assert(image_hash(tft)==no_history);
+    for(int i=0;i<3;++i) {
+        dashboard::station=i;const std::string name="logo-"+std::to_string(i);frame(tft,2,name.c_str());
+        if(i==0)assert(logo_pixels(tft,0x00AFDE)>40 && logo_pixels(tft,0xED1C24)>40);
+        else if(i==1)assert(logo_pixels(tft,0x078548)>40);
+        else assert(logo_pixels(tft,0x62A73A)>40 && logo_pixels(tft,0xF7941D)>40);
+    }
+    test_weather(tft);
     dashboard::show(0);tap(252,83);assert(dashboard::stock==5 && dashboard::page==0);
     tap(109,55);tap(55,69);assert(dashboard::stock==5); // Tab gaps are not hits.
     dashboard::touch(true,108,55);host_millis+=100;dashboard::touch(true,113,55);
@@ -119,7 +204,7 @@ int main() {
     tap(109,55);assert(dashboard::station==2);
     for(int i=0;i<3;++i)assert(dashboard::selected_tab(15+i*101,45,true)==i);
     frame(tft,2);
-    // One real observation, missing product, cached stamp, no fabricated lines.
+    // Gold graph is absent regardless of collector state; preserve cached/source timestamps.
     fixture.readings[live_data::THAI_GOLD].history_count=1;fixture.readings[live_data::THAI_GOLD].failed=true;
     frame(tft,1,"cached-single");
     fixture.readings[live_data::THAI_OIL].available=1<<8;frame(tft,2,"missing-products");
@@ -129,7 +214,7 @@ int main() {
     assert(tft.flushes==before); // Custom WiFi/calibration exclusively own TFT while hidden.
     assert(lv_mem_test()==LV_RES_OK);
     lv_mem_monitor_t monitor;lv_mem_monitor(&monitor);
-    printf("PASS: actual LVGL 8.3 rendering/partial flush bounds/font widths/tab selection/swipe exclusion/setup ownership; LVGL pool max used %u bytes. Preview fixtures are not real prices.\n",unsigned(monitor.max_used));
+    printf("PASS: actual LVGL 8.3 logos on pump, gold graph absent, WMO scenes, 100ms bounded animation/clip/visibility/no-pool-leak, font widths/tab/swipe/setup ownership; LVGL pool max used %u bytes. Preview fixtures are not real prices.\n",unsigned(monitor.max_used));
 }
 '''
 write_if_changed(OUT / "harness.cpp", harness)

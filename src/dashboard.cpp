@@ -24,6 +24,12 @@ live_data::Snapshot data;
 uint8_t page = 3, stock = 0, station = 0;
 uint32_t last_tick = 0, last_refresh = 0, last_age_refresh = 0;
 int last_second = -2;
+constexpr uint32_t WEATHER_FRAME_INTERVAL = 100;
+constexpr lv_area_t WEATHER_ART_AREA = {196, 48, 302, 131};
+// LVGL 8.3's public invalidation adds five pixels per side for transform rounding.
+constexpr lv_area_t WEATHER_DIRTY_AREA = {191, 43, 307, 136};
+uint32_t last_weather_animation = 0;
+uint16_t weather_frame = 0;
 lv_draw_ctx_t *ctx = nullptr;
 const char *const TICKERS[] = {"SET", "PTT", "PTG", "AOT", "ADVANC", "CPALL"};
 const char *const STATIONS[] = {"PTT", "PT / PTG", "Bangchak"};
@@ -64,6 +70,34 @@ void line(int x1, int y1, int x2, int y2, uint32_t color, int width = 1) {
     d.color = lv_color_hex(color); d.width = width; d.round_start = d.round_end = 1;
     lv_point_t a = {lv_coord_t(x1), lv_coord_t(y1)}, b = {lv_coord_t(x2), lv_coord_t(y2)};
     lv_draw_line(ctx, &d, &a, &b);
+}
+void polygon(const lv_point_t *points, uint8_t count, uint32_t color) {
+    lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d);
+    d.bg_color = lv_color_hex(color);
+    lv_draw_polygon(ctx, &d, points, count);
+}
+void station_logo(uint8_t selected) {
+    // Hand-drawn low-resolution approximations, not embedded official brand assets.
+    box(22, 91, 60, 59, 0xF3F8FC, 6);
+    if (selected == 0) {
+        constexpr uint32_t blue = 0x00AFDE, navy = 0x17166A;
+        box(31, 110, 42, 37, blue, 19);
+        box(36, 114, 32, 29, navy, 15);
+        static const lv_point_t left[] = {{43, 93}, {46, 104}, {39, 120}, {31, 123}, {36, 107}};
+        static const lv_point_t right[] = {{59, 93}, {67, 107}, {74, 124}, {65, 120}, {57, 104}};
+        polygon(left, 5, blue); polygon(right, 5, blue);
+        box(40, 119, 24, 24, 0xED1C24, 12);
+    } else if (selected == 1) {
+        box(26, 94, 52, 52, 0xA6CE39, 26);
+        box(29, 97, 46, 46, 0x078548, 23);
+        label("PT", 29, 104, 46, 0xFFFFFF, true, LV_TEXT_ALIGN_CENTER);
+    } else {
+        static const lv_point_t green[] = {{29, 135}, {28, 115}, {35, 103}, {52, 96}, {51, 116}, {42, 130}};
+        static const lv_point_t orange[] = {{54, 135}, {51, 120}, {57, 106}, {75, 99}, {73, 120}, {63, 132}};
+        polygon(green, 6, 0x62A73A); polygon(orange, 6, 0xF7941D);
+        line(32, 133, 47, 108, 0xDCECC9, 1);
+        line(57, 132, 68, 111, 0xFFE2B0, 1);
+    }
 }
 void source_stamp(const live_data::Reading &r, char *text, size_t size) {
     if (r.source_epoch) {
@@ -160,22 +194,35 @@ void stocks() {
     status(source, 138);
     history(r, 164, 74, CYAN);
 }
+void bullion_quote(float price, bool valid, int y, uint32_t color) {
+    char text[24]; value(price, valid, text, sizeof(text), 0);
+    if (strlen(text) <= 6) digital(text, 18, y, 2, color);
+    else label(text, 18, y + 6, 184, color, true); // Long prices still fit without dropping digits.
+}
 void gold() {
     label("THAI GOLD 96.5%", 12, 7, 296, GOLD, true);
-    // Original bullion illustration: bevelled bars, not a third-party image/logo.
-    box(222, 55, 71, 34, 0xAA7423, 5);
-    box(214, 47, 71, 34, GOLD, 5, 0xFFE5A0, 2);
-    line(221, 54, 277, 54, 0xFFF1BE, 2);
-    label("96.5", 218, 57, 65, 0x684715, false, LV_TEXT_ALIGN_CENTER);
-    const auto &r = data.readings[live_data::THAI_GOLD]; char text[32];
-    label("BUY", 12, 43, 55, MUTED); value(r.values[1], r.valid, text, sizeof(text), 0);
-    label(text, 78, 38, 126, GOLD, true);
-    label("SELL", 12, 76, 65, MUTED); value(r.values[0], r.valid, text, sizeof(text), 0);
-    label(text, 78, 71, 126, 0xFFFFFF, true);
-    label("THB / baht weight", 12, 102, 296, MUTED);
-    status(live_data::THAI_GOLD, 125);
-    label("Observed SELL / since boot", 12, 149, 296, GOLD);
-    history(r, 174, 64, GOLD);
+    const auto &r = data.readings[live_data::THAI_GOLD];
+    box(10, 40, 194, 75, PANEL, 10);
+    box(10, 120, 194, 75, PANEL, 10);
+    label("BUY", 20, 44, 164, GOLD);
+    bullion_quote(r.values[1], r.valid, 68, GOLD);
+    label("SELL", 20, 124, 164, CYAN);
+    bullion_quote(r.values[0], r.valid, 148, 0xFFFFFF);
+    // Original stacked bullion artwork occupies the reclaimed graph space.
+    box(228, 75, 76, 32, 0xAD7824, 5);
+    box(219, 69, 76, 32, 0xE6AD3D, 5, 0xFFE5A0, 1);
+    box(215, 49, 78, 36, GOLD, 5, 0xFFF0B8, 2);
+    line(222, 56, 284, 56, 0xFFF4C8, 2);
+    label("96.5", 222, 59, 64, 0x684715, false, LV_TEXT_ALIGN_CENTER);
+    label("THB", 212, 113, 96, MUTED, false, LV_TEXT_ALIGN_CENTER);
+    label("/ baht wt.", 209, 135, 99, MUTED, false, LV_TEXT_ALIGN_CENTER);
+    label("UPDATED", 210, 159, 98, GOLD, false, LV_TEXT_ALIGN_CENTER);
+    char clock[6] = "--:--";
+    if (r.valid && strlen(r.source_time) >= 16 && r.source_time[13] == ':')
+        memcpy(clock, r.source_time + 11, 5);
+    label(clock, 211, 179, 96, 0xFFFFFF, true, LV_TEXT_ALIGN_CENTER);
+    box(10, 211, 300, 27, PANEL, 7);
+    status(live_data::THAI_GOLD, 213); // Full source date/time and cached/error remain visible.
 }
 void oil() {
     label("FUEL / THB PER L", 12, 7, 296, CYAN, true);
@@ -184,11 +231,10 @@ void oil() {
         box(10 + 101 * i, 40, 98, 29, station == i ? 0x263C37 : PANEL, 8, colors[i], station == i ? 2 : 0);
         label(STATIONS[i], 10 + 101 * i, 45, 98, colors[i], false, LV_TEXT_ALIGN_CENTER);
     }
-    // Stylized text wordmark and an original pump; these are not official station logos.
     box(12, 82, 80, 116, PANEL, 10, colors[station], 2);
-    box(22, 93, 60, 35, 0x071219, 4);
-    label(station == 0 ? "PTT" : station == 1 ? "PT" : "BCP", 22, 101, 60, colors[station], false, LV_TEXT_ALIGN_CENTER);
-    box(26, 145, 47, 35, colors[station], 5);
+    station_logo(station);
+    box(25, 160, 51, 26, colors[station], 5);
+    label(station == 0 ? "ptt" : station == 1 ? "PT" : "BCP", 25, 163, 51, 0x0B1922, false, LV_TEXT_ALIGN_CENTER);
     line(77, 137, 88, 150, MUTED, 3); line(88, 150, 88, 183, MUTED, 3);
     line(88, 183, 75, 183, MUTED, 3);
     const auto &r = data.readings[live_data::THAI_OIL];
@@ -202,25 +248,111 @@ void oil() {
     }
     status(live_data::THAI_OIL, 211);
 }
+enum class WeatherScene : uint8_t { UNKNOWN, CLEAR, MAINLY_CLEAR, PARTLY_CLOUDY, OVERCAST, FOG, DRIZZLE, RAIN, SNOW, THUNDER };
+WeatherScene weather_scene(int code) {
+    switch (code) {
+        case 0: return WeatherScene::CLEAR;
+        case 1: return WeatherScene::MAINLY_CLEAR;
+        case 2: return WeatherScene::PARTLY_CLOUDY;
+        case 3: return WeatherScene::OVERCAST;
+        case 45: case 48: return WeatherScene::FOG;
+        case 51: case 53: case 55: case 56: case 57: return WeatherScene::DRIZZLE;
+        case 61: case 63: case 65: case 66: case 67: case 80: case 81: case 82: return WeatherScene::RAIN;
+        case 71: case 73: case 75: case 77: case 85: case 86: return WeatherScene::SNOW;
+        case 95: case 96: case 99: return WeatherScene::THUNDER;
+        default: return WeatherScene::UNKNOWN;
+    }
+}
 const char *condition(int code) {
-    if (code == 0) return "Clear sky";
-    if (code <= 3) return "Cloudy";
-    if (code == 45 || code == 48) return "Fog";
-    if (code >= 95) return "Thunderstorm";
-    if (code >= 71 && code <= 77) return "Snow";
-    if (code >= 51 && code <= 57) return "Drizzle";
-    if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) return "Rain";
-    return "Other weather";
+    if (code == 56 || code == 57) return "Freezing drizzle";
+    if (code == 66 || code == 67) return "Freezing rain";
+    if (code == 80 || code == 81 || code == 82) return "Rain showers";
+    if (code == 85 || code == 86) return "Snow showers";
+    if (code == 96 || code == 99) return "Hail / thunder";
+    switch (weather_scene(code)) {
+        case WeatherScene::CLEAR: return "Clear sky";
+        case WeatherScene::MAINLY_CLEAR: return "Mainly clear";
+        case WeatherScene::PARTLY_CLOUDY: return "Partly cloudy";
+        case WeatherScene::OVERCAST: return "Overcast";
+        case WeatherScene::FOG: return "Fog";
+        case WeatherScene::DRIZZLE: return "Drizzle";
+        case WeatherScene::RAIN: return "Rain";
+        case WeatherScene::SNOW: return "Snow";
+        case WeatherScene::THUNDER: return "Thunderstorm";
+        default: return "Unknown WMO";
+    }
+}
+void sun(int x, int y) {
+    const float angle = weather_frame * 0.052359878f;
+    const int reach = 24 + int(lroundf(2 * sinf(angle * 2)));
+    for (int ray = 0; ray < 8; ++ray) {
+        const float a = angle + ray * 0.785398163f;
+        line(x + int(lroundf(cosf(a) * 19)), y + int(lroundf(sinf(a) * 19)),
+             x + int(lroundf(cosf(a) * reach)), y + int(lroundf(sinf(a) * reach)), GOLD, 2);
+    }
+    box(x - 15, y - 15, 31, 31, GOLD, 16);
+    box(x - 10, y - 11, 15, 9, 0xFFE8A0, 5);
+}
+void cloud(int x, int y, uint32_t color) {
+    box(x + 3, y + 8, 32, 32, color, 16);
+    box(x + 20, y, 40, 40, color, 20);
+    box(x + 48, y + 13, 28, 28, color, 14);
+    box(x + 8, y + 22, 65, 20, color, 10);
+}
+void weather_art(WeatherScene scene, int code) {
+    lv_area_t clipped;
+    if (!_lv_area_intersect(&clipped, ctx->clip_area, &WEATHER_ART_AREA)) return;
+    const lv_area_t *original_clip = ctx->clip_area;
+    ctx->clip_area = &clipped; // Rain, rays and cloud drift can never paint over numbers/text.
+    const int drift = int(lroundf(5 * sinf(weather_frame * 0.052359878f)));
+    if (scene == WeatherScene::UNKNOWN) {
+        label("--", 221, 78, 60, MUTED, true, LV_TEXT_ALIGN_CENTER);
+    } else if (scene == WeatherScene::CLEAR) {
+        sun(249, 88);
+    } else {
+        if (scene == WeatherScene::MAINLY_CLEAR || scene == WeatherScene::PARTLY_CLOUDY) sun(267, 74);
+        const bool dark = scene == WeatherScene::RAIN || scene == WeatherScene::THUNDER;
+        if (scene != WeatherScene::MAINLY_CLEAR) cloud(219 - drift, 64, dark ? 0x445C7D : 0x8FA6C4);
+        cloud(202 + drift, 75, dark ? 0x859BB7 : 0xD9E6F3);
+        if (scene == WeatherScene::FOG) {
+            for (int i = 0; i < 3; ++i) line(204 + drift, 109 + i * 9, 291 + drift, 109 + i * 9, MUTED, 2);
+        } else if (scene == WeatherScene::DRIZZLE || scene == WeatherScene::RAIN || scene == WeatherScene::THUNDER) {
+            const int count = scene == WeatherScene::DRIZZLE ? 4 : 7;
+            for (int i = 0; i < count; ++i) {
+                const int x = 214 + i * 11 + drift;
+                const int y = 106 + (weather_frame * 3 + i * 9) % 29;
+                line(x, y, x - 3, y + (scene == WeatherScene::DRIZZLE ? 4 : 7), CYAN, 2);
+            }
+            if (scene == WeatherScene::THUNDER && weather_frame % 24 < 4) {
+                static const lv_point_t bolt[] = {{252, 101}, {241, 116}, {252, 113}};
+                polygon(bolt, 3, GOLD);
+                line(252, 113, 245, 129, GOLD, 3);
+            }
+            if (code == 96 || code == 99) {
+                for (int i = 0; i < 3; ++i) {
+                    const int y = 110 + (weather_frame * 4 + i * 7) % 26;
+                    box(221 + i * 23, y, 4, 4, 0xF4FCFF, 2);
+                }
+            }
+        } else if (scene == WeatherScene::SNOW) {
+            for (int i = 0; i < 5; ++i) {
+                const int x = 215 + i * 17 + drift, y = 108 + (weather_frame * 2 + i * 7) % 29;
+                line(x - 2, y, x + 2, y, 0xF4FCFF, 1);
+                line(x, y - 2, x, y + 2, 0xF4FCFF, 1);
+            }
+        }
+    }
+    ctx->clip_area = original_clip;
 }
 void weather() {
     label("BANGKOK", 12, 7, 296, CYAN, true);
     const auto &r = data.readings[live_data::WEATHER]; char text[40];
     box(12, 44, 296, 92, PANEL, 14);
-    box(247, 61, 34, 34, GOLD, 17);
-    box(226, 81, 66, 23, 0xCCDBEF, 12);
+    const int code = r.valid ? int(r.values[3]) : -1;
+    weather_art(weather_scene(code), code);
     if (r.valid) snprintf(text, sizeof(text), "%.1f C", r.values[0]); else strcpy(text, "-- C");
-    label(text, 26, 57, 194, 0xFFFFFF, true);
-    label(r.valid ? condition(int(r.values[3])) : "--", 26, 98, 210, CYAN);
+    label(text, 26, 57, 164, 0xFFFFFF, true);
+    label(r.valid ? condition(code) : "--", 26, 103, 164, CYAN);
     if (r.valid) snprintf(text, sizeof(text), "Feels %.1f C", r.values[2]); else strcpy(text, "Feels -- C");
     label(text, 12, 144, 296, 0xFFFFFF, true);
     box(12, 179, 142, 30, PANEL, 8); box(163, 179, 145, 30, PANEL, 8);
@@ -249,6 +381,17 @@ void clock() {
 void draw(lv_event_t *event) {
     ctx = lv_event_get_draw_ctx(event);
     box(0, 0, 320, 240, BG, 0);
+    const lv_area_t *clip = ctx->clip_area;
+    if (page == 3 && clip->x1 >= WEATHER_DIRTY_AREA.x1 && clip->x2 <= WEATHER_DIRTY_AREA.x2 &&
+        clip->y1 >= WEATHER_DIRTY_AREA.y1 && clip->y2 <= WEATHER_DIRTY_AREA.y2) {
+        // This region is right of all weather text. Skip float/date formatting and glyph work
+        // during animation-only partial flushes; full data/page redraws still use weather().
+        box(12, 44, 296, 92, PANEL, 14);
+        const auto &r = data.readings[live_data::WEATHER];
+        const int code = r.valid ? int(r.values[3]) : -1;
+        weather_art(weather_scene(code), code);
+        return;
+    }
     if (page == 0) stocks(); else if (page == 1) gold(); else if (page == 2) oil();
     else if (page == 3) weather(); else clock();
 }
@@ -262,6 +405,7 @@ int selected_tab(int x, int y, bool oil_tab) {
 }
 void change_page(int direction) {
     page = (page + 5 + direction) % 5;
+    last_weather_animation = millis();
     lv_obj_invalidate(root);
 }
 } // namespace
@@ -287,7 +431,7 @@ bool begin(TFT_eSPI &screen) {
 void show(uint8_t selected) {
     if (!root) return;
     page = selected % 5; active = true; gesture = {}; input_pressed = false;
-    last_tick = millis();
+    last_tick = millis(); last_weather_animation = last_tick;
     live_data::copy_snapshot(data); last_refresh = millis();
     last_second = -2; lv_obj_invalidate(root);
 }
@@ -323,6 +467,13 @@ void tick(uint32_t now) {
             last_second = second; last_age_refresh = now; lv_obj_invalidate(root);
         }
     }
-    lv_timer_handler();
+    const auto &weather = data.readings[live_data::WEATHER];
+    if (page == 3 && weather.valid && weather_scene(int(weather.values[3])) != WeatherScene::UNKNOWN &&
+        now - last_weather_animation >= WEATHER_FRAME_INTERVAL) {
+        last_weather_animation = now;
+        weather_frame = (weather_frame + 1) % 120;
+        lv_obj_invalidate_area(root, &WEATHER_ART_AREA);
+    }
+    lv_timer_handler(); // Exactly one main-thread handler call; no timers/render callback re-entry.
 }
 } // namespace dashboard

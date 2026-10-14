@@ -11,8 +11,9 @@
 - เปิดแดชบอร์ดเฉพาะเมื่อ `WL_CONNECTED`; Wi-Fi หลุดกลับหน้าเชื่อมต่อ
 - แดชบอร์ด **LVGL 8.3.11** เต็มจอ 5 หน้า midnight/neon ไม่มี navbar: หุ้นไทย → ทองไทย → น้ำมันไทย → อากาศกรุงเทพ → นาฬิกา cyberpunk
 - **ปัดซ้าย/ขวาเปลี่ยนหน้า** แตะเลือกหุ้น SET / PTT / PTG / AOT / ADVANC / CPALL หรือสถานี PTT / PT (PTG) / Bangchak; แตะพื้นหลังไม่เปลี่ยนหน้า ต้องปล่อย Connect ก่อนใช้งาน ไม่เลือก tab หลัง swipe/กดค้าง
-- หุ้นราคาล่าสุด/กราฟ observations จริงจาก Yahoo พร้อมวันที่; ทองแท่งไทย96.5% ซื้อ/ขาย ภาพทองแท่ง original และกราฟราคาขายที่สังเกตจริงหลังเปิดเครื่อง (ไม่สร้างประวัติ)
-- น้ำมัน Gasohol95/91/E20/DieselB7 แยก12ราคาของ3สถานี ตัวเลขแดงแบบปั๊ม7segment ภาพปั๊ม original และ stylized text wordmarks **ไม่ใช่โลโก้ทางการ**
+- หุ้นราคาล่าสุด/กราฟ observations จริงจาก Yahoo พร้อมวันที่; **หน้าทองตัดกราฟออกแล้ว** ใช้ราคา96.5% ซื้อ/ขายตัวเลขใหญ่44px ภาพทองแท่ง และเวลาปรับราคาที่เด่นขึ้น พร้อมวันที่/สถานะcached
+- น้ำมัน Gasohol95/91/E20/DieselB7 แยก12ราคาของ3สถานี ตัวเลขแดงแบบปั๊ม7segment มีตราบนหน้าปั๊ม: PTTเปลวน้ำเงิน/แกนแดง, PTวงกลมเขียว/PT, Bangchakใบไม้เขียว–ส้ม เป็น **hand-drawn approximations ไม่ใช่ไฟล์โลโก้ทางการ**
+- อากาศมีแอนิเมชันตามWMOจริง: รัศมีดวงอาทิตย์หมุน เมฆลอย ฝน/หิมะตก หมอก ฟ้าแลบ/ลูกเห็บตามชนิด อัปเดตประมาณ100msเฉพาะกรอบภาพเมื่อเปิดหน้าอากาศ ไม่ขยับเมื่อข้อมูลขาดหรือWMOไม่รู้จัก
 - HTTPS worker แยกจาก main UI พร้อม timeout/trustedCA/snapshot เก็บค่าจริงล่าสุดใน RAM; ไม่มีข้อมูลใช้ -- ไม่ยืมสินค้าหรือสถานีอื่น Fetchพลาดแสดง CACHED พร้อม source timestamp สีแดง/ไม่มีค่าดีใช้ UNAVAILABLE/error; STALE เมื่อfetchสำเร็จล่าสุดเกิน2intervals
 - เวลา Bangkok UTC+7 จาก NTP; แสดง `--:--` จนเวลาถูกต้อง
 - Serial115200: `n` หน้าถัดไป, `c` ลบ calibration ที่บันทึกแล้วคาลิเบรตใหม่ (ไม่ลบ WiFi), `w` ลบ WiFi ที่บันทึกและกลับฟอร์ม, `t` touch diagnostics, `h` heap/stack; ไม่ log credentials
@@ -91,9 +92,9 @@ Yahoo **unofficial/delayed ไม่มี SLA** ล่าสุดจาก met
 
 **ข้อจำกัดกราฟ:** ตรวจ2026-10-14 Yahooส่งSET1จุด แม้ขอ1mo หุ้นอีก5ตัวมี22จุด; เมื่อYahooให้<2จุดจะเก็บ latest ที่มี market timestamp เพิ่มขึ้นจริงในRAM ใช้ป้าย Observed / since boot และ 1 real sample เมื่อมีจุดเดียว ไม่เติมเส้นย้อนหลังเอง เมื่อได้ dailyhistory>=2จุดจะใช้APIhistoryแทน กราฟเชื่อมจุดจริง/แกนเวลาตาม timestamp ไม่ใช่ข้อมูลทุกนาทีหรือadjustedclose
 
-ทองendpointที่ใช้มีlatestเท่านั้น จึงเก็บ **observed SELL** ทุกsuccessfulfetch15นาทีสูงสุด32จุดในRAM แกนเป็นเวลาที่ตรวจพบจริง ไม่ใช่เวลาเปลี่ยนราคาของสมาคม ไม่มีseed/fakecurve เกิดจุดเดียวเมื่อเริ่ม ราว8ชั่วโมงเมื่อfetchต่อเนื่อง Rebootล้างประวัติ แสดงupdate date/timeของsourceแยกต่างหาก
+ทองendpointที่ใช้มีlatestเท่านั้น **หน้าทองไม่แสดงกราฟแล้ว** ขยายราคาBUY/SELLและเวลาUPDATEDจากsource ค่าไม่มีใช้-- ยังแสดงfullsource date/timeและCACHED/STALE/error Collectorเดิมยังเก็บobservedSELLในRAM32จุดทุกsuccessfulfetch15นาทีโดยไม่แต่งข้อมูล แต่UIไม่ได้ใช้ประวัตินี้ ไม่เปลี่ยนAPI/refresh/NVS
 
-น้ำมันตรวจครบ12สินค้าจริง API keys Gasohol95/91/E20 = gasohol_95/gasohol_91/gasohol_e20; PTT/PTดีเซลใช้ diesel แต่ **บางจากใช้ disel** ตามschemaจริง ตรวจชื่อสินค้าด้วย: แก๊สโซฮอล์95/91/E20 และดีเซลB7 ไม่มีpremium/เบนซิน95/ปั๊มอื่นมาทดแทน หากไม่มี/null/ชื่อไม่ตรงแสดง -- แม้ข้อมูลสินค้าอื่นสำเร็จ Text wordmarksและpumpเป็นภาพออกแบบเอง ไม่ใช้officialโลโก้ที่ไม่ได้ตรวจสิทธิ์ ไม่อ้างการรับรองโดยสถานี
+น้ำมันตรวจครบ12สินค้าจริง API keys Gasohol95/91/E20 = gasohol_95/gasohol_91/gasohol_e20; PTT/PTดีเซลใช้ diesel แต่ **บางจากใช้ disel** ตามschemaจริง ตรวจชื่อสินค้าด้วย: แก๊สโซฮอล์95/91/E20 และดีเซลB7 ไม่มีpremium/เบนซิน95/ปั๊มอื่นมาทดแทน หากไม่มี/null/ชื่อไม่ตรงแสดง -- แม้ข้อมูลสินค้าอื่นสำเร็จ ตราในหน้าปั๊มวาดเองเป็นภาพย่อที่อ้างอิงรูปลักษณ์แบรนด์ ไม่ฝังofficialภาพ/SVG/bitmap เครื่องหมายเป็นของเจ้าของแบรนด์ ไม่อ้างการรับรองโดยสถานี
 
 Open-Meteo เป็นข้อมูลจากแบบจำลอง ไม่ใช่เซนเซอร์หน้างาน/พยากรณ์โอกาสฝน; แสดงเวลาข้อมูล Bangkok ส่วน Yahoo timestamp แปลงเป็น Bangkok, ทองไทยคงวันที่ พ.ศ. ของ source, น้ำมันไทยแปลงเดือนภาษาไทย/พ.ศ. เป็นวันที่ ASCII ค.ศ. โดยไม่แทนด้วยเวลา fetch
 
@@ -130,6 +131,13 @@ Buildมี -fstack-usage/-Wframe-larger-than=2048 และpost-linkguard UIfra
 ## Roadmap
 ยืนยันUI/pressure/swipe/TLSและheapบนฮาร์ดแวร์; ติดตามSETcoverage/CArotation/API429 ไม่เพิ่มข้อมูลย้อนหลังปลอมหรือAPIแบบมีkey
 
+### Weather animation / Brand references
+WMO0/1/2/3แยกclear/mainlyclear/partlycloudy/overcast; 45/48หมอก; 51/53/55/56/57drizzle; 61/63/65/66/67/80/81/82rain; 71/73/75/77/85/86snow; 95/96/99thunder (96/99เพิ่มลูกเห็บ) ไม่ใช้ช่วงกว้างเดาcodeที่ไม่มีในschema ข้อมูลcachedใช้WMOล่าสุดที่ดีพร้อมสถานะ/timeเดิม ไอคอนsunเป็นสัญลักษณ์condition ไม่ใช่ตำแหน่งดวงอาทิตย์หรือday/night prediction
+
+แอนิเมชัน100msผ่านmain tick ไม่มีdelay/สร้างtimerหรือobjectใหม่ทุกframe animation-only invalidateเฉพาะกรอบ107x84px (LVGL8.3เพิ่มsafety margin5pxต่อด้าน; การเปลี่ยนหน้า/ข้อมูล/สถานะยังวาดเต็มจอได้) particles/rays/เมฆclipอยู่ในกรอบ ไม่ทับตัวเลข/ข้อความ Fastpathวาดเฉพาะcard/artโดยไม่formatตัวเลข/dateหรือglyphข้อความนอกกรอบซ้ำต่อanimation-onlyframe ยังคงSnapshotstatic/copy_snapshot ไม่คืนby-value และlv_timer_handlerเรียกครั้งเดียว ไม่เพิ่มstack/bufferใหญ่ NativeLVGLtestsตรวจpixelmovement/dirtyarea/visibility/poolไม่รั่ว; FPS/ทัช/heapจริงบนบอร์ดยังไม่ยืนยัน
+
+อ้างอิงภาพสำหรับวาดย่อ: [PTT official site](https://www.pttplc.com/) และ [Bangchak official emblem](https://www.bangchak.co.th/assets/images/logo.svg) ตรวจผ่านHTTPS; PTใช้ลักษณะวงกลมเขียว/PTตามbriefผู้ใช้ เพราะPTGsiteที่ลองมีSSL/TLS errorจึงไม่ดาวน์โหลดasset/ไม่ปิดcertificate verification ไม่ถือว่าภาพวาดย่อเป็นofficiallicensedasset และไม่มีการดาวน์โหลดโลโก้ขณะfirmwareทำงาน
+
 ## Fonts / License
 UI คาลิเบรตและ WiFi ใช้ **Nunito Bold** (rounded sans) จาก Google Fonts, SIL Open Font License 1.1 ดู `assets/fonts/OFL.txt` และต้นฉบับ `assets/fonts/Nunito.ttf` ฝัง ASCII bitmap ขนาด 18/26px ใน `src/ui_fonts.h` (~4.8 KB bitmap) ไม่ต้องดาวน์โหลดฟอนต์ขณะรัน
 
@@ -137,4 +145,4 @@ UI คาลิเบรตและ WiFi ใช้ **Nunito Bold** (rounded san
 
 License ส่วนอื่นของโปรเจค: TBD
 
-LVGL library MIT; built-in Montserrat font OFL1.1 ตามlicensesที่มากับdependency ส่วนทอง/ปั๊ม/7segmentเป็นprocedural artworkใน src/dashboard.cpp ไม่ใช่third-partyภาพหรือofficiallogos
+LVGL library MIT; built-in Montserrat font OFL1.1 ตามlicensesที่มากับdependency ส่วนทอง/ปั๊ม/7segment/weatherเป็นprocedural artworkใน src/dashboard.cpp ตราแบรนด์เป็นhand-drawn approximations ไม่ใช่การฝังthird-partyภาพหรือofficiallicensedlogos
