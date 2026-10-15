@@ -104,6 +104,40 @@ int logo_pixels(const TFT_eSPI &tft,uint32_t rgb) {
     for(int y=91;y<150;++y)for(int x=22;x<82;++x)count+=tft.framebuffer[y*320+x]==color;
     return count;
 }
+int logo_hue_pixels(const TFT_eSPI &tft,bool orange) {
+    int count=0;
+    for(int y=91;y<147;++y)for(int x=22;x<82;++x) {
+        const auto pixel=tft.framebuffer[y*320+x];
+        const int r=((pixel>>11)&31)*8,g=((pixel>>5)&63)*4,b=(pixel&31)*8;
+        count+=orange ? (r>180 && g>65 && g<210 && b<80) : (g>90 && g>r+25 && g>b+25);
+    }
+    return count;
+}
+void test_motion_time(TFT_eSPI &tft) {
+    using namespace dashboard;
+    sample_weather(1000);const float x0=weather_pose.cloud_x;
+    sample_weather(1040);assert(fabsf(weather_pose.cloud_x-x0)>0 && fabsf(weather_pose.cloud_x-x0)<0.2f);
+    assert(weather_pose.flash==0);
+    sample_weather(1840);assert(weather_pose.flash>100);
+    sample_weather(2050);assert(weather_pose.flash==0);
+    sample_weather(2240);assert(weather_pose.flash>40);
+    sample_weather(2400);assert(weather_pose.flash==0);
+    fixture.readings[live_data::WEATHER].valid=true;
+    fixture.readings[live_data::WEATHER].values[3]=61;
+    frame(tft,3,"motion-clock-test");
+    weather_elapsed_ms=0;sample_weather(0);
+    for(int i=0;i<10;++i){host_millis+=40;tick(host_millis);}
+    const float regular=weather_pose.cloud_x;assert(weather_elapsed_ms==400);
+    weather_elapsed_ms=0;sample_weather(0);
+    host_millis+=400;tick(host_millis);
+    assert(weather_elapsed_ms==400 && fabsf(weather_pose.cloud_x-regular)<0.00001f); // Not frame-count speed.
+    tft.reset_capture();host_millis+=20;tick(host_millis);assert(tft.total_pixels==0); // 40ms cap.
+    // Unsigned elapsed arithmetic remains correct across millis() wrap.
+    last_tick=UINT32_MAX-15;last_weather_animation=last_tick;host_millis=24;
+    weather_elapsed_ms=0;tick(host_millis);assert(weather_elapsed_ms==40);
+    // Restore a modest time so unrelated status-age refresh does not affect ROI checks.
+    host_millis=1000;last_tick=host_millis;last_weather_animation=host_millis;last_age_refresh=host_millis;
+}
 void test_weather(TFT_eSPI &tft) {
     using dashboard::WeatherScene;
     for(auto pair:{std::pair<int,WeatherScene>(0,WeatherScene::CLEAR),{1,WeatherScene::MAINLY_CLEAR},
@@ -124,13 +158,13 @@ void test_weather(TFT_eSPI &tft) {
         memcpy(previous,tft.framebuffer,sizeof(previous));
         const uint32_t first=image_hash(tft);
         bool moved=false;
-        for(int i=0;i<24;++i) {
+        for(int i=0;i<60;++i) {
             const int formats_before=formatted_values;
-            tft.reset_capture();host_millis+=100;dashboard::tick(host_millis);
+            tft.reset_capture();host_millis+=40;dashboard::tick(host_millis);
             assert(formatted_values==formats_before); // Animation path must not reformat prices/weather text.
             // LVGL 8.3 public invalidation adds a 5px transform-safety margin on each side.
             if(tft.total_pixels<=0 || tft.total_pixels>117*94)
-                fprintf(stderr,"Animation code=%d step=%d frame=%u pixels=%d bounds=%d,%d..%d,%d revision=%u\n",code,i,unsigned(dashboard::weather_frame),tft.total_pixels,tft.min_x,tft.min_y,tft.max_x,tft.max_y,dashboard::data.revision);
+                fprintf(stderr,"Animation code=%d step=%d frame=%u pixels=%d bounds=%d,%d..%d,%d revision=%u\n",code,i,unsigned(dashboard::weather_elapsed_ms),tft.total_pixels,tft.min_x,tft.min_y,tft.max_x,tft.max_y,dashboard::data.revision);
             assert(tft.total_pixels>0 && tft.total_pixels<=117*94);
             assert(tft.min_x>=191 && tft.max_x<=307 && tft.min_y>=43 && tft.max_y<=136);
             moved=moved || image_hash(tft)!=first;
@@ -141,16 +175,16 @@ void test_weather(TFT_eSPI &tft) {
     }
     // Steady frames do not leak LVGL pool allocations.
     lv_mem_monitor_t before{},after{};lv_mem_monitor(&before);
-    for(int i=0;i<200;++i){host_millis+=100;dashboard::tick(host_millis);}
+    for(int i=0;i<200;++i){host_millis+=40;dashboard::tick(host_millis);}
     lv_mem_monitor(&after);assert(after.used_cnt==before.used_cnt && after.free_size==before.free_size);
     weather.values[3]=97;frame(tft,3,"unknown-wmo");tft.reset_capture();
-    const auto frozen=dashboard::weather_frame;
-    host_millis+=400;dashboard::tick(host_millis);assert(tft.total_pixels==0 && dashboard::weather_frame==frozen);
+    const auto frozen=dashboard::weather_elapsed_ms;
+    host_millis+=400;dashboard::tick(host_millis);assert(tft.total_pixels==0 && dashboard::weather_elapsed_ms==frozen);
     weather.valid=false;frame(tft,3,"no-weather");tft.reset_capture();
-    host_millis+=400;dashboard::tick(host_millis);assert(tft.total_pixels==0 && dashboard::weather_frame==frozen);
+    host_millis+=400;dashboard::tick(host_millis);assert(tft.total_pixels==0 && dashboard::weather_elapsed_ms==frozen);
     weather.valid=true;weather.values[3]=61;
     frame(tft,0,"stocks-animation-paused");tft.reset_capture();
-    host_millis+=400;dashboard::tick(host_millis);assert(tft.total_pixels==0 && dashboard::weather_frame==frozen);
+    host_millis+=400;dashboard::tick(host_millis);assert(tft.total_pixels==0 && dashboard::weather_elapsed_ms==frozen);
     frame(tft,3,"rain-visible");
     dashboard::hide();tft.reset_capture();host_millis+=1000;dashboard::tick(host_millis);
     assert(tft.total_pixels==0); // Setup owns TFT; animation must stop completely.
@@ -188,9 +222,18 @@ int main() {
     for(int i=0;i<3;++i) {
         dashboard::station=i;const std::string name="logo-"+std::to_string(i);frame(tft,2,name.c_str());
         if(i==0)assert(logo_pixels(tft,0x00AFDE)>40 && logo_pixels(tft,0xED1C24)>40);
-        else if(i==1)assert(logo_pixels(tft,0x078548)>40);
-        else assert(logo_pixels(tft,0x62A73A)>40 && logo_pixels(tft,0xF7941D)>40);
+        else if(i==1)assert(logo_pixels(tft,0xE41B23)>60 && logo_hue_pixels(tft,false)>20); // Red italic PT, not white letters.
+        else assert(logo_hue_pixels(tft,false)>80 && logo_hue_pixels(tft,true)>10);
+        const auto &image=station_logos::images[i];
+        assert(image.header.w==60 && image.header.h==56 && image.data_size==6720);
+        // Asset occupies the exact intended pump rectangle: hose must not overwrite its lettering.
+        for(int y=0;y<56;++y)for(int x=0;x<60;++x) {
+            const int offset=(y*60+x)*2;
+            const uint16_t expected=image.data[offset] | (uint16_t(image.data[offset+1])<<8);
+            assert(tft.framebuffer[(y+91)*320+x+22]==expected);
+        }
     }
+    test_motion_time(tft);
     test_weather(tft);
     dashboard::show(0);tap(252,83);assert(dashboard::stock==5 && dashboard::page==0);
     tap(109,55);tap(55,69);assert(dashboard::stock==5); // Tab gaps are not hits.
@@ -214,7 +257,7 @@ int main() {
     assert(tft.flushes==before); // Custom WiFi/calibration exclusively own TFT while hidden.
     assert(lv_mem_test()==LV_RES_OK);
     lv_mem_monitor_t monitor;lv_mem_monitor(&monitor);
-    printf("PASS: actual LVGL 8.3 logos on pump, gold graph absent, WMO scenes, 100ms bounded animation/clip/visibility/no-pool-leak, font widths/tab/swipe/setup ownership; LVGL pool max used %u bytes. Preview fixtures are not real prices.\n",unsigned(monitor.max_used));
+    printf("PASS: actual LVGL 8.3 logos on pump, gold graph absent, WMO scenes, 25fps-target elapsed-time animation/clip/visibility/no-pool-leak, font widths/tab/swipe/setup ownership; LVGL pool max used %u bytes. Preview fixtures are not real prices.\n",unsigned(monitor.max_used));
 }
 '''
 write_if_changed(OUT / "harness.cpp", harness)
@@ -233,7 +276,7 @@ def compile_c(source):
 
 with ThreadPoolExecutor(max_workers=8) as pool:
     objects = list(pool.map(compile_c, sources))
-subprocess.run(["g++", "-std=c++11", "-O1", *includes, str(OUT / "harness.cpp"),
+subprocess.run(["g++", "-std=c++11", "-O1", *includes, str(OUT / "harness.cpp"), str(ROOT / "src/station_logos.cpp"),
                 *map(str, objects), "-o", str(OUT / "test.exe")], check=True, timeout=60)
 subprocess.run([str(OUT / "test.exe")], cwd=OUT, check=True, timeout=15)
 try:

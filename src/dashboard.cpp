@@ -1,6 +1,7 @@
 #include "dashboard.h"
 #include "dashboard_gesture.h"
 #include "live_data.h"
+#include "station_logos.h"
 #include <lvgl.h>
 #include <math.h>
 #include <time.h>
@@ -24,12 +25,16 @@ live_data::Snapshot data;
 uint8_t page = 3, stock = 0, station = 0;
 uint32_t last_tick = 0, last_refresh = 0, last_age_refresh = 0;
 int last_second = -2;
-constexpr uint32_t WEATHER_FRAME_INTERVAL = 100;
+constexpr uint32_t WEATHER_FRAME_INTERVAL = 40; // Target 25 fps; actual hardware throughput must be measured.
 constexpr lv_area_t WEATHER_ART_AREA = {196, 48, 302, 131};
 // LVGL 8.3's public invalidation adds five pixels per side for transform rounding.
 constexpr lv_area_t WEATHER_DIRTY_AREA = {191, 43, 307, 136};
 uint32_t last_weather_animation = 0;
-uint16_t weather_frame = 0;
+uint32_t weather_elapsed_ms = 0;
+struct WeatherPose {
+    float seconds, cloud_x, cloud_y, back_x, back_y, sun_angle, pulse;
+    uint8_t flash;
+} weather_pose{};
 lv_draw_ctx_t *ctx = nullptr;
 const char *const TICKERS[] = {"SET", "PTT", "PTG", "AOT", "ADVANC", "CPALL"};
 const char *const STATIONS[] = {"PTT", "PT / PTG", "Bangchak"};
@@ -50,9 +55,9 @@ void read_input(lv_indev_drv_t *, lv_indev_data_t *out) {
     out->point = input_point;
 }
 void box(int x, int y, int w, int h, uint32_t fill, int radius = 10,
-         uint32_t border = 0, int border_width = 0) {
+         uint32_t border = 0, int border_width = 0, lv_opa_t opacity = LV_OPA_COVER) {
     lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d);
-    d.bg_color = lv_color_hex(fill); d.radius = radius;
+    d.bg_color = lv_color_hex(fill); d.radius = radius; d.bg_opa = opacity;
     d.border_color = lv_color_hex(border); d.border_width = border_width;
     lv_area_t a = {lv_coord_t(x), lv_coord_t(y), lv_coord_t(x + w - 1), lv_coord_t(y + h - 1)};
     lv_draw_rect(ctx, &d, &a);
@@ -65,39 +70,23 @@ void label(const char *text, int x, int y, int width = 300, uint32_t color = 0xF
     lv_area_t a = {lv_coord_t(x), lv_coord_t(y), lv_coord_t(x + width - 1), lv_coord_t(y + (large ? 30 : 22) - 1)};
     lv_draw_label(ctx, &d, &a, text, nullptr);
 }
-void line(int x1, int y1, int x2, int y2, uint32_t color, int width = 1) {
+void line(int x1, int y1, int x2, int y2, uint32_t color, int width = 1, lv_opa_t opacity = LV_OPA_COVER) {
     lv_draw_line_dsc_t d; lv_draw_line_dsc_init(&d);
-    d.color = lv_color_hex(color); d.width = width; d.round_start = d.round_end = 1;
+    d.color = lv_color_hex(color); d.width = width; d.opa = opacity; d.round_start = d.round_end = 1;
     lv_point_t a = {lv_coord_t(x1), lv_coord_t(y1)}, b = {lv_coord_t(x2), lv_coord_t(y2)};
     lv_draw_line(ctx, &d, &a, &b);
 }
-void polygon(const lv_point_t *points, uint8_t count, uint32_t color) {
+void polygon(const lv_point_t *points, uint8_t count, uint32_t color, lv_opa_t opacity = LV_OPA_COVER) {
     lv_draw_rect_dsc_t d; lv_draw_rect_dsc_init(&d);
-    d.bg_color = lv_color_hex(color);
+    d.bg_color = lv_color_hex(color); d.bg_opa = opacity;
     lv_draw_polygon(ctx, &d, points, count);
 }
 void station_logo(uint8_t selected) {
-    // Hand-drawn low-resolution approximations, not embedded official brand assets.
-    box(22, 91, 60, 59, 0xF3F8FC, 6);
-    if (selected == 0) {
-        constexpr uint32_t blue = 0x00AFDE, navy = 0x17166A;
-        box(31, 110, 42, 37, blue, 19);
-        box(36, 114, 32, 29, navy, 15);
-        static const lv_point_t left[] = {{43, 93}, {46, 104}, {39, 120}, {31, 123}, {36, 107}};
-        static const lv_point_t right[] = {{59, 93}, {67, 107}, {74, 124}, {65, 120}, {57, 104}};
-        polygon(left, 5, blue); polygon(right, 5, blue);
-        box(40, 119, 24, 24, 0xED1C24, 12);
-    } else if (selected == 1) {
-        box(26, 94, 52, 52, 0xA6CE39, 26);
-        box(29, 97, 46, 46, 0x078548, 23);
-        label("PT", 29, 104, 46, 0xFFFFFF, true, LV_TEXT_ALIGN_CENTER);
-    } else {
-        static const lv_point_t green[] = {{29, 135}, {28, 115}, {35, 103}, {52, 96}, {51, 116}, {42, 130}};
-        static const lv_point_t orange[] = {{54, 135}, {51, 120}, {57, 106}, {75, 99}, {73, 120}, {63, 132}};
-        polygon(green, 6, 0x62A73A); polygon(orange, 6, 0xF7941D);
-        line(32, 133, 47, 108, 0xDCECC9, 1);
-        line(57, 132, 68, 111, 0xFFE2B0, 1);
-    }
+    if (selected >= 3) return;
+    // Pre-rasterized, antialiased RGB565 in flash; no SVG decoder or image allocation here.
+    lv_draw_img_dsc_t d; lv_draw_img_dsc_init(&d);
+    const lv_area_t area = {22, 91, 22 + station_logos::WIDTH - 1, 91 + station_logos::HEIGHT - 1};
+    lv_draw_img(ctx, &d, &area, &station_logos::images[selected]);
 }
 void source_stamp(const live_data::Reading &r, char *text, size_t size) {
     if (r.source_epoch) {
@@ -234,9 +223,10 @@ void oil() {
     box(12, 82, 80, 116, PANEL, 10, colors[station], 2);
     station_logo(station);
     box(25, 160, 51, 26, colors[station], 5);
-    label(station == 0 ? "ptt" : station == 1 ? "PT" : "BCP", 25, 163, 51, 0x0B1922, false, LV_TEXT_ALIGN_CENTER);
-    line(77, 137, 88, 150, MUTED, 3); line(88, 150, 88, 183, MUTED, 3);
-    line(88, 183, 75, 183, MUTED, 3);
+    for (int y = 167; y <= 179; y += 6) line(34, y, 67, y, 0x20372C, 2);
+    // Keep the hose outside the logo so the small bangchak lettering stays unobstructed.
+    line(85, 126, 90, 137, MUTED, 3); line(90, 137, 90, 185, MUTED, 3);
+    line(90, 185, 78, 185, MUTED, 3);
     const auto &r = data.readings[live_data::THAI_OIL];
     const char *products[] = {"Gasohol 95", "Gasohol 91", "E20", "Diesel B7"};
     for (int i = 0; i < 4; ++i) {
@@ -282,9 +272,38 @@ const char *condition(int code) {
         default: return "Unknown WMO";
     }
 }
+uint8_t flash_pulse(uint32_t phase, uint32_t start, uint32_t rise, uint32_t fall) {
+    const uint32_t elapsed = phase - start;
+    if (elapsed >= rise + fall) return 0;
+    return elapsed < rise ? uint8_t(elapsed * 255 / rise) : uint8_t((rise + fall - elapsed) * 255 / fall);
+}
+void sample_weather(uint32_t elapsed_ms) {
+    // Bounded periodic time, sampled once per frame. All motion uses elapsed time, not frame count.
+    const float t = (elapsed_ms % 120000U) * 0.001f;
+    constexpr float TAU = 6.283185307f;
+    weather_pose.seconds = t;
+    weather_pose.cloud_x = 5.8f * sinf(TAU * t / 12.0f);
+    weather_pose.cloud_y = 1.4f * sinf(TAU * t / 6.0f + 1.1f);
+    weather_pose.back_x = 4.2f * sinf(TAU * t / 15.0f + 1.2f);
+    weather_pose.back_y = 1.7f * sinf(TAU * t / 10.0f + 0.5f);
+    weather_pose.sun_angle = TAU * t / 12.0f;
+    weather_pose.pulse = sinf(TAU * t / 3.0f);
+    const uint32_t storm_phase = elapsed_ms % 6000U;
+    const uint8_t first = flash_pulse(storm_phase, 1800, 28, 132);
+    const uint8_t second = flash_pulse(storm_phase, 2200, 18, 62);
+    weather_pose.flash = first > second ? first : second;
+}
+uint32_t tint(uint32_t from, uint32_t to, uint8_t amount) {
+    const uint32_t inverse = 255 - amount;
+    const uint32_t r = (((from >> 16) & 255) * inverse + ((to >> 16) & 255) * amount) / 255;
+    const uint32_t g = (((from >> 8) & 255) * inverse + ((to >> 8) & 255) * amount) / 255;
+    const uint32_t b = ((from & 255) * inverse + (to & 255) * amount) / 255;
+    return (r << 16) | (g << 8) | b;
+}
 void sun(int x, int y) {
-    const float angle = weather_frame * 0.052359878f;
-    const int reach = 24 + int(lroundf(2 * sinf(angle * 2)));
+    const float angle = weather_pose.sun_angle;
+    const int reach = 24 + int(lroundf(1.8f * weather_pose.pulse));
+    box(x - 18, y - 18, 37, 37, GOLD, 19, 0, 0, uint8_t(22 + 10 * weather_pose.pulse));
     for (int ray = 0; ray < 8; ++ray) {
         const float a = angle + ray * 0.785398163f;
         line(x + int(lroundf(cosf(a) * 19)), y + int(lroundf(sinf(a) * 19)),
@@ -304,7 +323,8 @@ void weather_art(WeatherScene scene, int code) {
     if (!_lv_area_intersect(&clipped, ctx->clip_area, &WEATHER_ART_AREA)) return;
     const lv_area_t *original_clip = ctx->clip_area;
     ctx->clip_area = &clipped; // Rain, rays and cloud drift can never paint over numbers/text.
-    const int drift = int(lroundf(5 * sinf(weather_frame * 0.052359878f)));
+    const int drift = int(lroundf(weather_pose.cloud_x));
+    const int bob = int(lroundf(weather_pose.cloud_y));
     if (scene == WeatherScene::UNKNOWN) {
         label("--", 221, 78, 60, MUTED, true, LV_TEXT_ALIGN_CENTER);
     } else if (scene == WeatherScene::CLEAR) {
@@ -312,31 +332,46 @@ void weather_art(WeatherScene scene, int code) {
     } else {
         if (scene == WeatherScene::MAINLY_CLEAR || scene == WeatherScene::PARTLY_CLOUDY) sun(267, 74);
         const bool dark = scene == WeatherScene::RAIN || scene == WeatherScene::THUNDER;
-        if (scene != WeatherScene::MAINLY_CLEAR) cloud(219 - drift, 64, dark ? 0x445C7D : 0x8FA6C4);
-        cloud(202 + drift, 75, dark ? 0x859BB7 : 0xD9E6F3);
+        const uint8_t flash = scene == WeatherScene::THUNDER ? weather_pose.flash : 0;
+        if (scene != WeatherScene::MAINLY_CLEAR)
+            cloud(219 + int(lroundf(weather_pose.back_x)), 64 + int(lroundf(weather_pose.back_y)),
+                  dark ? tint(0x445C7D, 0xD6E9FD, flash) : 0x8FA6C4);
+        cloud(202 + drift, 75 + bob, dark ? tint(0x859BB7, 0xF4FAFF, flash) : 0xD9E6F3);
         if (scene == WeatherScene::FOG) {
             for (int i = 0; i < 3; ++i) line(204 + drift, 109 + i * 9, 291 + drift, 109 + i * 9, MUTED, 2);
         } else if (scene == WeatherScene::DRIZZLE || scene == WeatherScene::RAIN || scene == WeatherScene::THUNDER) {
             const int count = scene == WeatherScene::DRIZZLE ? 4 : 7;
             for (int i = 0; i < count; ++i) {
-                const int x = 214 + i * 11 + drift;
-                const int y = 106 + (weather_frame * 3 + i * 9) % 29;
-                line(x, y, x - 3, y + (scene == WeatherScene::DRIZZLE ? 4 : 7), CYAN, 2);
+                const float period = 0.8f + (i % 3) * 0.2f;
+                const float phase = fmodf(weather_pose.seconds / period + i * 0.137f, 1.0f);
+                const float x = 214.0f + i * 11 + weather_pose.cloud_x - 6 * phase;
+                const float y = 106.0f + phase * 33;
+                const float length = scene == WeatherScene::DRIZZLE ? 4.0f : 7.0f + (i % 2) * 2;
+                // Three short opacity-graded trail pieces, with independently phased drops.
+                for (int trail = 0; trail < 3; ++trail) {
+                    const float offset = length * trail / 3;
+                    line(int(lroundf(x + offset * 0.35f)), int(lroundf(y - offset)),
+                         int(lroundf(x + (offset + length / 3) * 0.35f)), int(lroundf(y - offset - length / 3)),
+                         CYAN, 2, uint8_t(235 - trail * 70));
+                }
             }
-            if (scene == WeatherScene::THUNDER && weather_frame % 24 < 4) {
+            if (flash > 10) {
                 static const lv_point_t bolt[] = {{252, 101}, {241, 116}, {252, 113}};
-                polygon(bolt, 3, GOLD);
-                line(252, 113, 245, 129, GOLD, 3);
+                polygon(bolt, 3, GOLD, flash);
+                line(252, 113, 245, 129, GOLD, 3, flash);
             }
             if (code == 96 || code == 99) {
                 for (int i = 0; i < 3; ++i) {
-                    const int y = 110 + (weather_frame * 4 + i * 7) % 26;
+                    const float phase = fmodf(weather_pose.seconds / (0.6f + i * 0.2f) + i * 0.31f, 1.0f);
+                    const int y = int(lroundf(107 + phase * 31));
                     box(221 + i * 23, y, 4, 4, 0xF4FCFF, 2);
                 }
             }
         } else if (scene == WeatherScene::SNOW) {
             for (int i = 0; i < 5; ++i) {
-                const int x = 215 + i * 17 + drift, y = 108 + (weather_frame * 2 + i * 7) % 29;
+                const float phase = fmodf(weather_pose.seconds / (i % 2 ? 2.4f : 3.0f) + i * 0.23f, 1.0f);
+                const int x = int(lroundf(215 + i * 17 + weather_pose.cloud_x + 2 * sinf(phase * 6.283185307f)));
+                const int y = int(lroundf(107 + phase * 32));
                 line(x - 2, y, x + 2, y, 0xF4FCFF, 1);
                 line(x, y - 2, x, y + 2, 0xF4FCFF, 1);
             }
@@ -432,6 +467,7 @@ void show(uint8_t selected) {
     if (!root) return;
     page = selected % 5; active = true; gesture = {}; input_pressed = false;
     last_tick = millis(); last_weather_animation = last_tick;
+    sample_weather(weather_elapsed_ms);
     live_data::copy_snapshot(data); last_refresh = millis();
     last_second = -2; lv_obj_invalidate(root);
 }
@@ -456,7 +492,8 @@ void touch(bool pressed, int x, int y) {
 }
 void tick(uint32_t now) {
     if (!active || !root) return;
-    lv_tick_inc(now - last_tick); last_tick = now;
+    const uint32_t elapsed = now - last_tick;
+    lv_tick_inc(elapsed); last_tick = now;
     if (now - last_refresh >= 250) {
         last_refresh = now;
         // Main-thread-only snapshot and drawing; worker has no LVGL/TFT access.
@@ -468,11 +505,13 @@ void tick(uint32_t now) {
         }
     }
     const auto &weather = data.readings[live_data::WEATHER];
-    if (page == 3 && weather.valid && weather_scene(int(weather.values[3])) != WeatherScene::UNKNOWN &&
-        now - last_weather_animation >= WEATHER_FRAME_INTERVAL) {
-        last_weather_animation = now;
-        weather_frame = (weather_frame + 1) % 120;
-        lv_obj_invalidate_area(root, &WEATHER_ART_AREA);
+    if (page == 3 && weather.valid && weather_scene(int(weather.values[3])) != WeatherScene::UNKNOWN) {
+        weather_elapsed_ms = (weather_elapsed_ms + elapsed % 120000U) % 120000U;
+        if (now - last_weather_animation >= WEATHER_FRAME_INTERVAL) {
+            last_weather_animation = now;
+            sample_weather(weather_elapsed_ms);
+            lv_obj_invalidate_area(root, &WEATHER_ART_AREA);
+        }
     }
     lv_timer_handler(); // Exactly one main-thread handler call; no timers/render callback re-entry.
 }

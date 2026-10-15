@@ -45,7 +45,7 @@ Dashboard LVGL8.3.11 ตลาดไทย5หน้า ปัดซ้าย/�
 
 SingleRGB565320x8buffer5120bytes + LVGL24KiBpool static ไม่มีfullscreensprite/PSRAM ไม่ใช้GFXfontเป็นLVGLfont Montserrat18/26builtinเท่านั้น initializeหลังgate mainเป็นผู้เรียกLVGL/TFTทั้งหมด hideก่อนsetup หยุดtimer/flushขณะsetup Workerไม่มีจอ/ทัช
 
-Latest build cyd_ili9341: flash1,153,989/1,310,720bytes (88.0%), staticRAM85,716/327,680bytes (26.2%); ไม่รวมTLS/body24KiB/JSON6KiB/filter1.5KiB/workerstack12KiBและruntimeheap ไม่เคยตรวจflashcapacityจริง ค่าesp32dev4MBเป็นconfig ไม่เปลี่ยนpartition/ไม่เลือกnoOTA/ไม่flash
+Latest build cyd_ili9341: flash1,175,729/1,310,720bytes (89.7%), staticRAM85,748/327,680bytes (26.2%); ไม่รวมTLS/body24KiB/JSON6KiB/filter1.5KiB/workerstack12KiBและruntimeheap ไม่เคยตรวจflashcapacityจริง ค่าesp32dev4MBเป็นconfig ไม่เปลี่ยนpartition/ไม่เลือกnoOTA/ไม่flash
 
 APIverified2026-10-14: 9URLs HTTP200withfirmwareCA YahooSET1historypoint vsอีก5หุ้น22points; oil12productsครบ keysptt/pt/bcp BCPdiesel=disel ไม่ทดแทนmissing; goldobservedSELL collector RAM32points/15minยังอยู่ แต่หน้าทองตัดกราฟออกแล้ว ใช้ราคา7segments44px/UPDATED26pxและfullsource stamp18px StocksTHB/SETpoints goldTHB/bahtweight oilTHB/L ไม่มีราคาตลาดโลกแล้ว อ่านREADME/projectสำหรับcoverageและrate limits
 
@@ -58,4 +58,7 @@ NVSเป็นplaintext ไม่เปิดflash/NVSencryption Physicalflasha
 
 2026-10-15 UIpolish: ตราPTTflameblue/red/PTgreencircle/Bangchakgreenorangeleafเป็นLVGLhand-drawn approximationsบนpump ไม่ฝังbitmapasset/officialSVG ตรวจvisualrefsPTT/Bangchakผ่านHTTPS PTGSSL/TLSล้มเหลวจึงใช้userbriefโดยไม่bypassverify Weather100msเฉพาะpage3visible/knownvalidWMO: suns/clouds/rain/snow/fog/lightning/hail clip107x84 animation-onlydirtyflushรวมLVGL5pxmargin117x94สูงสุด (data/page/statuschangesยังfullredrawได้) ไม่paintบนlabels fastpathcard/artข้ามfloat/date/textformatต่อanimation-onlyframe (nativecounterทดสอบ) ไม่มีper-frameappheap/Snapshottemporary/handlerreentry ใช้Montserrat18/26เดิม Buffers/stack/NVSเดิมเพิ่มเพียง8staticbytesสำหรับanimationstate NativeLVGLmotion/dirtypixel/pool/font testsผ่าน ไม่ใช่hardwareFPS/heapmeasurement
 
-ยังไม่ได้ทดสอบรุ่นแอนิเมชัน/แก้stackบนบอร์ดจริง หากไม่มีtouchresponseให้ตรวจVSPIpinmapก่อน หากแตะไม่ตรงให้วัดraw/ตรวจแกนแล้วคาลิเบรตใหม่ คงGPIO36ไม่มีinternalpull-up ไม่มีการแก้pinmap/pressureแบบเดา
+2026-10-15 latest: small-logoassets3×60×56RGB565LE=20,160flashbytes (PTT/PTBezierreproductions, PTตัวแดงเอียงวงแหวน2สี; BangchakofficialpublicSVGcrop/recomposeพร้อมbangchakword) Antialias8×/Lanczos offline tools/generate_station_logos.py dependencyresvg-py/Pillowเฉพาะdeveloper ไม่มีruntimeSVGdecoder/textureframebuffer/Hoseทับword ภาพและdescriptorsconstflash ไม่คัดลงRAM
+Weather latest target25fps40ms (ไม่ใช่hardwaremeasurement), uint32elapsedmillisvisible-only + static32byteWeatherPose sampleครั้งเดียวต่อframe cloudsมีdrift/bobphaseต่างกัน solarrotation/pulse/raintrails/lightningpulse6s ไม่ขึ้นกับframecount Tests40ms/irregulardelta/milliswrap/hiddenpause/ROI/poolผ่าน StaticRAMเพิ่ม32bytesจากรุ่นprimitive100msเดิม ไม่มีSnapshottemporaryหรือstackoverride loop240 tick/show32bytesเท่าเดิม SPIยัง27MHz dirty117x94รวมLVGLmarginเช่นเดิม
+
+ยังไม่ได้ทดสอบรุ่นโลโก้ใหม่/25fps-target/แก้stackบนบอร์ดจริง หากไม่มีtouchresponseให้ตรวจVSPIpinmapก่อน หากแตะไม่ตรงให้วัดraw/ตรวจแกนแล้วคาลิเบรตใหม่ คงGPIO36ไม่มีinternalpull-up ไม่มีการแก้pinmap/pressureแบบเดา
