@@ -1,5 +1,6 @@
 #include "dashboard.h"
 #include "dashboard_gesture.h"
+#include "weather_cadence.h"
 #include "live_data.h"
 #include "station_logos.h"
 #include <lvgl.h>
@@ -25,28 +26,70 @@ live_data::Snapshot data;
 uint8_t page = 3, stock = 0, station = 0;
 uint32_t last_tick = 0, last_refresh = 0, last_age_refresh = 0;
 int last_second = -2;
-constexpr uint32_t WEATHER_FRAME_INTERVAL = 40; // Target 25 fps; actual hardware throughput must be measured.
+constexpr uint32_t WEATHER_FPS_WINDOW = 2000; // Target 30 fps, measured separately at SPI completion.
 constexpr lv_area_t WEATHER_ART_AREA = {196, 48, 302, 131};
 // LVGL 8.3's public invalidation adds five pixels per side for transform rounding.
 constexpr lv_area_t WEATHER_DIRTY_AREA = {191, 43, 307, 136};
-uint32_t last_weather_animation = 0;
+WeatherCadence weather_cadence;
+WeatherStats weather_report;
+bool weather_running = false, animation_pending = false;
+bool refresh_started = false, refresh_roi_only = true;
+uint32_t weather_window_started = 0, scheduled_frames = 0, presented_frames = 0;
+uint32_t skipped_slots = 0, mixed_refreshes = 0;
 uint32_t weather_elapsed_ms = 0;
 struct WeatherPose {
     float seconds, cloud_x, cloud_y, back_x, back_y, sun_angle, pulse;
+    float squash, lobe_left, lobe_centre, lobe_right;
     uint8_t flash;
 } weather_pose{};
 lv_draw_ctx_t *ctx = nullptr;
 const char *const TICKERS[] = {"SET", "PTT", "PTG", "AOT", "ADVANC", "CPALL"};
 const char *const STATIONS[] = {"PTT", "PT / PTG", "Bangchak"};
 
+bool within(const lv_area_t &area, const lv_area_t &bounds) {
+    return area.x1 >= bounds.x1 && area.y1 >= bounds.y1 && area.x2 <= bounds.x2 && area.y2 <= bounds.y2;
+}
+void set_weather_running(bool enabled, uint32_t now) {
+    if (weather_running == enabled) return;
+    weather_running = enabled;
+    weather_cadence.reset(); animation_pending = false;
+    if (enabled) {
+        weather_report = {}; weather_report.active = true;
+        weather_window_started = now;
+        scheduled_frames = presented_frames = skipped_slots = mixed_refreshes = 0;
+    } else weather_report.active = false;
+}
+void close_weather_window(uint32_t now) {
+    if (!weather_running) return;
+    const uint32_t elapsed = now - weather_window_started;
+    if (elapsed < WEATHER_FPS_WINDOW) return;
+    weather_report.window_ms = elapsed;
+    weather_report.scheduled_fps_x10 = uint32_t(uint64_t(scheduled_frames) * 10000U / elapsed);
+    weather_report.presented_roi_fps_x10 = uint32_t(uint64_t(presented_frames) * 10000U / elapsed);
+    weather_report.skipped_slots = skipped_slots; weather_report.mixed_refreshes = mixed_refreshes;
+    weather_window_started = now;
+    scheduled_frames = presented_frames = skipped_slots = mixed_refreshes = 0;
+}
 void flush(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *colors) {
     // Only tick() runs LVGL, only while dashboard owns TFT. Setup never races this callback.
+    const bool last_flush = lv_disp_flush_is_last(driver);
+    if (!refresh_started) { refresh_started = true; refresh_roi_only = true; }
+    refresh_roi_only = refresh_roi_only && within(*area, WEATHER_DIRTY_AREA);
     if (active) {
         tft->startWrite();
         tft->setAddrWindow(area->x1, area->y1, area->x2 - area->x1 + 1, area->y2 - area->y1 + 1);
         tft->pushColors(reinterpret_cast<uint16_t *>(colors),
             (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1), true);
         tft->endWrite();
+    }
+    if (last_flush) {
+        // Single synchronous TFT transfer owner: last chunk has physically left pushColors/endWrite.
+        // Exclude full/mixed data/page refreshes from the animation-only presented FPS.
+        if (weather_running && active && page == 3) {
+            if (animation_pending && refresh_roi_only) ++presented_frames;
+            else ++mixed_refreshes;
+        }
+        animation_pending = false; refresh_started = false;
     }
     lv_disp_flush_ready(driver);
 }
@@ -282,10 +325,14 @@ void sample_weather(uint32_t elapsed_ms) {
     const float t = (elapsed_ms % 120000U) * 0.001f;
     constexpr float TAU = 6.283185307f;
     weather_pose.seconds = t;
-    weather_pose.cloud_x = 5.8f * sinf(TAU * t / 12.0f);
-    weather_pose.cloud_y = 1.4f * sinf(TAU * t / 6.0f + 1.1f);
-    weather_pose.back_x = 4.2f * sinf(TAU * t / 15.0f + 1.2f);
-    weather_pose.back_y = 1.7f * sinf(TAU * t / 10.0f + 0.5f);
+    weather_pose.cloud_x = 8.0f * sinf(TAU * t / 8.0f);
+    weather_pose.cloud_y = 2.6f * sinf(TAU * t / 4.0f + 1.1f);
+    weather_pose.back_x = 6.5f * sinf(TAU * t / 12.0f + 1.2f);
+    weather_pose.back_y = 2.3f * sinf(TAU * t / 10.0f + 0.5f);
+    weather_pose.squash = sinf(TAU * t / 6.0f + 0.6f);
+    weather_pose.lobe_left = sinf(TAU * t / 3.0f);
+    weather_pose.lobe_centre = sinf(TAU * t / 4.0f + 1.2f);
+    weather_pose.lobe_right = sinf(TAU * t / 5.0f + 2.4f);
     weather_pose.sun_angle = TAU * t / 12.0f;
     weather_pose.pulse = sinf(TAU * t / 3.0f);
     const uint32_t storm_phase = elapsed_ms % 6000U;
@@ -312,11 +359,23 @@ void sun(int x, int y) {
     box(x - 15, y - 15, 31, 31, GOLD, 16);
     box(x - 10, y - 11, 15, 9, 0xFFE8A0, 5);
 }
-void cloud(int x, int y, uint32_t color) {
-    box(x + 3, y + 8, 32, 32, color, 16);
-    box(x + 20, y, 40, 40, color, 20);
-    box(x + 48, y + 13, 28, 28, color, 14);
-    box(x + 8, y + 22, 65, 20, color, 10);
+void cloud_lobe(float x, float y, float width, float height, uint32_t color) {
+    const int w = int(lroundf(width)), h = int(lroundf(height));
+    box(int(lroundf(x)), int(lroundf(y)), w, h, color, (w < h ? w : h) / 2);
+}
+void cloud(int x, int y, uint32_t color, bool back = false) {
+    // Morph around the centre: independently breathing lobes plus opposing squash/stretch.
+    // No bitmap rebuilding or allocation; every partial draw uses the same sampled pose.
+    const float a = back ? weather_pose.lobe_right : weather_pose.lobe_left;
+    const float b = back ? weather_pose.lobe_left : weather_pose.lobe_centre;
+    const float c = back ? weather_pose.lobe_centre : weather_pose.lobe_right;
+    const float sx = 1.0f + 0.065f * (back ? -weather_pose.squash : weather_pose.squash);
+    const float sy = 1.0f - 0.085f * (back ? -weather_pose.squash : weather_pose.squash);
+    const float left = 32 + 3.0f * a, middle = 40 + 3.6f * b, right = 28 + 2.8f * c;
+    cloud_lobe(x + 38 + (3 + a - 38) * sx, y + 22 + (8 - a - 22) * sy, left * sx, left * sy, color);
+    cloud_lobe(x + 38 + (20 + b - 38) * sx, y + 22 + (-1.4f * b - 22) * sy, middle * sx, middle * sy, color);
+    cloud_lobe(x + 38 + (48 - c - 38) * sx, y + 22 + (13 + c - 22) * sy, right * sx, right * sy, color);
+    cloud_lobe(x + 38 - 30 * sx, y + 22, 65 * sx, 20 * sy, color);
 }
 void weather_art(WeatherScene scene, int code) {
     lv_area_t clipped;
@@ -335,7 +394,7 @@ void weather_art(WeatherScene scene, int code) {
         const uint8_t flash = scene == WeatherScene::THUNDER ? weather_pose.flash : 0;
         if (scene != WeatherScene::MAINLY_CLEAR)
             cloud(219 + int(lroundf(weather_pose.back_x)), 64 + int(lroundf(weather_pose.back_y)),
-                  dark ? tint(0x445C7D, 0xD6E9FD, flash) : 0x8FA6C4);
+                  dark ? tint(0x445C7D, 0xD6E9FD, flash) : 0x8FA6C4, true);
         cloud(202 + drift, 75 + bob, dark ? tint(0x859BB7, 0xF4FAFF, flash) : 0xD9E6F3);
         if (scene == WeatherScene::FOG) {
             for (int i = 0; i < 3; ++i) line(204 + drift, 109 + i * 9, 291 + drift, 109 + i * 9, MUTED, 2);
@@ -440,7 +499,7 @@ int selected_tab(int x, int y, bool oil_tab) {
 }
 void change_page(int direction) {
     page = (page + 5 + direction) % 5;
-    last_weather_animation = millis();
+    set_weather_running(false, millis());
     lv_obj_invalidate(root);
 }
 } // namespace
@@ -466,12 +525,15 @@ bool begin(TFT_eSPI &screen) {
 void show(uint8_t selected) {
     if (!root) return;
     page = selected % 5; active = true; gesture = {}; input_pressed = false;
-    last_tick = millis(); last_weather_animation = last_tick;
+    last_tick = millis(); set_weather_running(false, last_tick);
     sample_weather(weather_elapsed_ms);
     live_data::copy_snapshot(data); last_refresh = millis();
     last_second = -2; lv_obj_invalidate(root);
 }
-void hide() { active = false; input_pressed = false; gesture = {}; }
+void hide() {
+    active = false; input_pressed = false; gesture = {};
+    set_weather_running(false, millis());
+}
 void next() { if (active) change_page(1); }
 void touch(bool pressed, int x, int y) {
     if (!active) return;
@@ -505,14 +567,22 @@ void tick(uint32_t now) {
         }
     }
     const auto &weather = data.readings[live_data::WEATHER];
-    if (page == 3 && weather.valid && weather_scene(int(weather.values[3])) != WeatherScene::UNKNOWN) {
+    set_weather_running(page == 3 && weather.valid && weather_scene(int(weather.values[3])) != WeatherScene::UNKNOWN, now);
+    if (weather_running) {
         weather_elapsed_ms = (weather_elapsed_ms + elapsed % 120000U) % 120000U;
-        if (now - last_weather_animation >= WEATHER_FRAME_INTERVAL) {
-            last_weather_animation = now;
+        const uint32_t slots = weather_cadence.advance(elapsed);
+        if (slots) {
+            ++scheduled_frames; skipped_slots += slots - 1;
             sample_weather(weather_elapsed_ms);
+            animation_pending = true;
             lv_obj_invalidate_area(root, &WEATHER_ART_AREA);
+            // Make THIS display timer due now, rather than rounding 33/34ms to its 20ms poll.
+            // Pinned LVGL 8.3 accessor; no global refresh-rate change or recursive rendering.
+            lv_timer_ready(_lv_disp_get_refr_timer(display));
         }
     }
     lv_timer_handler(); // Exactly one main-thread handler call; no timers/render callback re-entry.
+    close_weather_window(millis());
 }
+WeatherStats weather_stats() { return weather_report; }
 } // namespace dashboard

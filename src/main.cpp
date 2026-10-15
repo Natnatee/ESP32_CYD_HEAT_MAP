@@ -542,6 +542,11 @@ void loop() {
                 ESP.getFreeHeap(), ESP.getMinFreeHeap(),
                 unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
                 unsigned(uxTaskGetStackHighWaterMark(nullptr)), unsigned(stats.worker_stack_free_bytes));
+            const auto weather = dashboard::weather_stats();
+            Serial.printf("Weather target=30 scheduled=%u.%u presented-roi=%u.%u fps window=%ums skipped=%u mixed=%u active=%u (SPI completion, 0ms=warming)\n",
+                unsigned(weather.scheduled_fps_x10 / 10), unsigned(weather.scheduled_fps_x10 % 10),
+                unsigned(weather.presented_roi_fps_x10 / 10), unsigned(weather.presented_roi_fps_x10 % 10),
+                unsigned(weather.window_ms), unsigned(weather.skipped_slots), unsigned(weather.mixed_refreshes), unsigned(weather.active));
         }
         else if (command == 't') {
             touch_diagnostics = !touch_diagnostics;

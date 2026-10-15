@@ -131,12 +131,68 @@ void test_motion_time(TFT_eSPI &tft) {
     weather_elapsed_ms=0;sample_weather(0);
     host_millis+=400;tick(host_millis);
     assert(weather_elapsed_ms==400 && fabsf(weather_pose.cloud_x-regular)<0.00001f); // Not frame-count speed.
-    tft.reset_capture();host_millis+=20;tick(host_millis);assert(tft.total_pixels==0); // 40ms cap.
+    weather_cadence.reset();tft.reset_capture();host_millis+=20;tick(host_millis);assert(tft.total_pixels==0);
     // Unsigned elapsed arithmetic remains correct across millis() wrap.
-    last_tick=UINT32_MAX-15;last_weather_animation=last_tick;host_millis=24;
+    last_tick=UINT32_MAX-15;weather_cadence.reset();host_millis=24;
     weather_elapsed_ms=0;tick(host_millis);assert(weather_elapsed_ms==40);
     // Restore a modest time so unrelated status-age refresh does not affect ROI checks.
-    host_millis=1000;last_tick=host_millis;last_weather_animation=host_millis;last_age_refresh=host_millis;
+    host_millis=1000;last_tick=host_millis;last_age_refresh=host_millis;
+    set_weather_running(false,host_millis);
+}
+void test_cadence_and_presented_fps(TFT_eSPI &tft) {
+    WeatherCadence cadence;
+    uint32_t frames=0,previous=0;
+    for(uint32_t ms=1;ms<=10000;++ms) {
+        const auto slots=cadence.advance(1);
+        if(slots) {
+            assert(slots==1);++frames;
+            assert(ms==(frames*1000+29)/30); // Exact ceil(n * 1000 / 30), not 20ms timer quantization.
+            assert(ms-previous==33 || ms-previous==34);previous=ms;
+        }
+    }
+    assert(frames==300 && cadence.credit==0);
+    assert(cadence.advance(500)==15); // One render with 14 skipped slots, not a catch-up burst.
+    cadence.reset();uint32_t sum=0,slots=0;
+    for(int i=0;sum<10000;++i) {
+        uint32_t delta=(i%3==0?7:i%3==1?29:83);if(delta>10000-sum)delta=10000-sum;
+        sum+=delta;slots+=cadence.advance(delta);
+    }
+    assert(slots==300 && cadence.credit==0);
+    using namespace dashboard;
+    fixture.readings[live_data::WEATHER].valid=true;fixture.readings[live_data::WEATHER].values[3]=3;
+    frame(tft,3,"cadence-lvgl");
+    set_weather_running(false,host_millis);set_weather_running(true,host_millis);
+    weather_elapsed_ms=0;sample_weather(0);const auto started=host_millis;
+    uint32_t completions=0;
+    for(uint32_t ms=1;ms<=2000;++ms) {
+        const int before=tft.flushes;host_millis=started+ms;tick(host_millis);
+        if(tft.flushes!=before) {
+            ++completions;assert(ms==(completions*1000+29)/30);
+            assert(!refresh_started); // Last SPI chunk, not one count per partial buffer.
+        }
+    }
+    const auto stats=weather_stats();
+    assert(completions==60 && stats.window_ms==2000 && stats.scheduled_fps_x10==300);
+    assert(stats.presented_roi_fps_x10==300 && !stats.skipped_slots && !stats.mixed_refreshes);
+    host_millis+=500;const int before=tft.flushes;tick(host_millis);
+    assert(tft.flushes>before && scheduled_frames==1 && skipped_slots==14); // Still just one fresh refresh.
+    const uint32_t count=presented_frames;
+    lv_obj_invalidate(root);host_millis+=34;tick(host_millis);
+    assert(mixed_refreshes==1 && presented_frames==count); // Full data refresh excluded from ROI FPS.
+    hide();assert(!weather_stats().active);
+}
+void test_cloud_morph(TFT_eSPI &tft) {
+    using namespace dashboard;
+    fixture.readings[live_data::WEATHER].values[3]=3;frame(tft,3,"morph-check");
+    uint32_t first=0;
+    for(int i=0;i<2;++i) {
+        sample_weather(i?2100:0);
+        weather_pose.cloud_x=weather_pose.cloud_y=weather_pose.back_x=weather_pose.back_y=0;
+        weather_cadence.reset();
+        lv_obj_invalidate_area(root,&WEATHER_ART_AREA);lv_timer_ready(_lv_disp_get_refr_timer(display));
+        host_millis+=1;tick(host_millis);
+        if(!i)first=image_hash(tft);else assert(image_hash(tft)!=first); // Shape changes with translation frozen.
+    }
 }
 void test_weather(TFT_eSPI &tft) {
     using dashboard::WeatherScene;
@@ -158,9 +214,9 @@ void test_weather(TFT_eSPI &tft) {
         memcpy(previous,tft.framebuffer,sizeof(previous));
         const uint32_t first=image_hash(tft);
         bool moved=false;
-        for(int i=0;i<60;++i) {
+        for(int i=0;i<90;++i) {
             const int formats_before=formatted_values;
-            tft.reset_capture();host_millis+=40;dashboard::tick(host_millis);
+            tft.reset_capture();host_millis+=(i%3==0?34:33);dashboard::tick(host_millis);
             assert(formatted_values==formats_before); // Animation path must not reformat prices/weather text.
             // LVGL 8.3 public invalidation adds a 5px transform-safety margin on each side.
             if(tft.total_pixels<=0 || tft.total_pixels>117*94)
@@ -234,6 +290,8 @@ int main() {
         }
     }
     test_motion_time(tft);
+    test_cadence_and_presented_fps(tft);
+    test_cloud_morph(tft);
     test_weather(tft);
     dashboard::show(0);tap(252,83);assert(dashboard::stock==5 && dashboard::page==0);
     tap(109,55);tap(55,69);assert(dashboard::stock==5); // Tab gaps are not hits.
@@ -257,7 +315,7 @@ int main() {
     assert(tft.flushes==before); // Custom WiFi/calibration exclusively own TFT while hidden.
     assert(lv_mem_test()==LV_RES_OK);
     lv_mem_monitor_t monitor;lv_mem_monitor(&monitor);
-    printf("PASS: actual LVGL 8.3 logos on pump, gold graph absent, WMO scenes, 25fps-target elapsed-time animation/clip/visibility/no-pool-leak, font widths/tab/swipe/setup ownership; LVGL pool max used %u bytes. Preview fixtures are not real prices.\n",unsigned(monitor.max_used));
+    printf("PASS: actual LVGL 8.3 logos on pump, gold graph absent, WMO scenes, 30fps rational cadence + actual LVGL completion counters, cloud morph/clip/visibility/no-pool-leak, font widths/tab/swipe/setup ownership; LVGL pool max used %u bytes. Preview fixtures are not real prices.\n",unsigned(monitor.max_used));
 }
 '''
 write_if_changed(OUT / "harness.cpp", harness)
