@@ -150,3 +150,13 @@ UI คาลิเบรตและ WiFi ใช้ **Nunito Bold** (rounded san
 License ส่วนอื่นของโปรเจค: TBD
 
 LVGL library MIT; built-in Montserrat font OFL1.1 ตามlicensesที่มากับdependency ส่วนทอง/ปั๊ม/7segment/weatherเป็นprocedural artworkใน src/dashboard.cpp ตราแบรนด์เป็นPTT/PTreproductionsและBangchakofficialSVGที่crop/recomposeเป็นRGB565 ดูattribution/brandrightsในassets/logos/README.md ไม่อ้างว่าofficialassetเหล่านี้มีlicenseใช้งานได้อย่างเสรี
+
+### Display orientation
+จอทุกหน้าใช้ TFT rotation3 (หมุน180°จากเดิม) ขนาด320×240เท่าเดิม ทัชอ่านcanonical rotation1และกลับพิกัดก่อนส่งUI จึงใช้calibration/WiFiที่บันทึกไว้ได้โดยไม่ลบNVS คาลิเบรตใหม่ยังรองรับตามปกติ
+
+### IDLE0 watchdog / API diagnostics
+เพิ่ม cooperative TLS polling ให้IDLE0มีโอกาสรันระหว่างHTTPheader/Streamรอข้อมูล ไม่ปิดwatchdog คงCAverified มีrequest budget20sที่ตรวจเมื่อกลับเข้าtransport poll (ไม่รับรองharddeadlineของDNS/individualframeworkcalls) body8s/24KiB และrejectchunkedที่ไม่คาดหมาย ดูSerial API[index] phase=request/headers/body/done พร้อมelapsed/status/error/stack-min โดยไม่logcredentials รายละเอียดELFและข้อจำกัดในproject.md ทดสอบhostเพิ่ม python tools/test_cooperative_tls.py; ยังต้องยืนยันwatchdog/TLSstackบนบอร์ดจริง
+
+รอบแก้watchdogซ้ำ: APIworkerเปลี่ยนเป็นpriority0ให้IDLE0แบ่งtime-sliceได้แม้ภายในconnect/TLSไม่มีpoll เพิ่มlogdnsและtcp-tlsstart/doneเพื่อscopeก่อนheaders API[0]คือOpen-Meteo รอบก่อนpolling-onlyยังไม่เพียงพอ ข้อมูลล้มเหลวใช้lastgoodจริงในRAMพร้อมCACHED/เวลาเดิม หากไม่เคยโหลดได้ใช้--/UNAVAILABLE ไม่มีAPIทดแทนที่ไม่ตรวจสอบ Retryแยกแหล่ง30s/60s แล้วพักcircuit>=5min สูงสุด15min สำเร็จreset Yahoo429ยังพักทั้งhost15min แหล่งหนึ่งfailแล้วไปแหล่งถัดไปหลังrequestคืนการควบคุม ไม่ลบWiFi/calibration DNSมีblockingwaitframeworkได้16+15s; 20sเป็นpollbudgetไม่ใช่harddeadlineบังคับตัดopaqueTLScall ต้องทดสอบบนhardware ดูรายละเอียดfollow-upในproject.md
+
+TLSfollow-up: weather/ทอง/น้ำมันตั้งhandshake20sและcooperativebudget35s เฉพาะ3แหล่งนี้ Yahooยัง5s/20sเดิม (ไม่ใช่watchdogtimeout) ค่า-1ยังไม่ฟันธงbadCA/timeout เพิ่มTLSerrorcode/hex/textและepoch/freeheap/largestblockก่อนต่อเพื่อแยกสาเหตุ SNIใช้hostnameเดิมถูกต้อง ไม่เปลี่ยนCA: 2026-10-22ตรวจ9APIHTTP200และdirectTLS1.2ด้วยPEMเฟิร์มแวร์ผ่านแล้ว รัน python tools/verify_tls_hosts.py เพื่อตรวจhosttrustแบบไม่มีproxyได้ (network3connections ไม่ใช่ESP32performance test) บนบอร์ดยังต้องยืนยันweather/oilกลับมา ไม่มีinsecurefallback

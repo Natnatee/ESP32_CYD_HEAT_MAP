@@ -5,6 +5,8 @@
 #include <WiFiClientSecure.h>
 #include <math.h>
 #include "api_roots.h"
+#include "cooperative_tls.h"
+#include "api_retry.h"
 
 namespace live_data {
 namespace {
@@ -150,10 +152,13 @@ bool decode(Source source, const String &body, Reading &out) {
 }
 
 bool fetch(Source source, Reading &out) {
-    WiFiClientSecure client;
+    const uint32_t request_started = millis();
+    Serial.printf("API[%u] phase=request start\n", unsigned(source));
+    CooperativeTLS client{unsigned(source)};
     client.setCACert(API_ROOTS);
-    client.setHandshakeTimeout(5); // seconds, unlike HTTPClient millisecond timeouts.
-    client.setTimeout(3000);
+
+    client.setTimeout(3); // WiFiClientSecure takes SECONDS; Stream below takes milliseconds.
+    client.Stream::setTimeout(100); // Bound legacy timedRead's tail after request expiry.
     HTTPClient http;
     http.setConnectTimeout(4000);
     http.setTimeout(3000);
@@ -161,9 +166,18 @@ bool fetch(Source source, Reading &out) {
     http.useHTTP10(true); // Avoid chunk framing when reading a bounded body.
     http.setUserAgent("Mozilla/5.0"); // Yahoo returns 429 for the default client UA.
     if (!http.begin(client, URLS[source])) { out.error = -10; return false; }
+    const char *headers[] = {"Transfer-Encoding"};
+    http.collectHeaders(headers, 1);
     const int status = http.GET();
-    out.error = status;
-    if (status != HTTP_CODE_OK) { http.end(); return false; }
+    Serial.printf("API[%u] phase=headers ms=%u status=%d expired=%u\n", unsigned(source),
+        unsigned(millis() - request_started), status, unsigned(client.expired()));
+    out.error = client.expired() ? -25 : status;
+    if (status != HTTP_CODE_OK || client.expired()) { http.end(); return false; }
+    // HTTP/1.0 was requested; never feed chunk framing to the JSON parser.
+    if (http.header("Transfer-Encoding").length() &&
+        !http.header("Transfer-Encoding").equalsIgnoreCase("identity")) {
+        out.error = -26; http.end(); return false;
+    }
     const int length = http.getSize();
     if (length > int(MAX_BODY)) { out.error = -22; http.end(); return false; }
     String body;
@@ -176,23 +190,38 @@ bool fetch(Source source, Reading &out) {
         int available = stream->available();
         if (available > 0) {
             char buffer[512];
-            const int count = stream->readBytes(buffer, min(available, int(sizeof(buffer))));
-            if (count <= 0 || body.length() + count > MAX_BODY || !body.concat(buffer, count)) break;
+            // Read only currently available bytes; never enter Stream::readBytes timed polling.
+            const int count = stream->read(reinterpret_cast<uint8_t *>(buffer), min(available, int(sizeof(buffer))));
+            if (count > 0 && (body.length() + count > MAX_BODY || !body.concat(buffer, count))) break;
         }
         if ((length >= 0 && body.length() == size_t(length)) || (!http.connected() && !stream->available())) {
             complete = length < 0 || body.length() == size_t(length);
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(1); // Let IDLE0 run even on configurations with a coarse tick.
     }
     http.end();
+    Serial.printf("API[%u] phase=body ms=%u bytes=%u complete=%u expired=%u\n", unsigned(source),
+        unsigned(millis() - request_started), unsigned(body.length()), unsigned(complete), unsigned(client.expired()));
+    if (client.expired()) { out.error = -25; return false; }
     if (!complete || body.isEmpty()) { out.error = -24; return false; }
     return decode(source, body, out);
 }
 
+// Called under snapshot_mux; never sleep/log/network while holding the lock.
+void mark_failure(Source source, int error) {
+    shared.readings[source].failed = true;
+    shared.readings[source].error = error;
+    if (error == 429 && source >= SET) {
+        for (int j = SET; j < COUNT; ++j) {
+            shared.readings[j].failed = true;
+            shared.readings[j].error = 429;
+        }
+    }
+}
+
 void worker(void *) {
-    uint32_t attempted[COUNT]{};
-    bool tried[COUNT]{};
+    ApiRetry retries[COUNT]{};
     uint32_t yahoo_blocked_at = 0;
     bool yahoo_blocked = false;
     for (;;) {
@@ -204,15 +233,20 @@ void worker(void *) {
         for (int i = 0; i < COUNT && WiFi.status() == WL_CONNECTED; ++i) {
             uint32_t now = millis();
             const uint32_t interval = i == WEATHER ? WEATHER_INTERVAL : FINANCE_INTERVAL;
-            if (tried[i] && now - attempted[i] < interval) continue;
+            if (!retries[i].ready(now)) continue;
             if (i >= SET && yahoo_blocked && now - yahoo_blocked_at < FINANCE_INTERVAL) continue;
-            tried[i] = true;
+
             Reading result;
+            const uint32_t fetch_started = millis();
             bool ok = fetch(static_cast<Source>(i), result);
-            attempted[i] = millis();
+            retries[i].finish(millis(), ok, interval);
+            Serial.printf("API[%u] phase=done ms=%u ok=%u error=%d stack-min=%u retry-ms=%u failures=%u fallback=%s\n", unsigned(i),
+                unsigned(millis() - fetch_started), unsigned(ok), int(result.error),
+                unsigned(uxTaskGetStackHighWaterMark(nullptr)), unsigned(retries[i].wait),
+                unsigned(retries[i].failures), ok ? "none" : "last-good-or-unavailable");
             if (!ok && result.error == 429 && i >= SET) {
                 yahoo_blocked = true;
-                yahoo_blocked_at = attempted[i];
+                yahoo_blocked_at = retries[i].attempted;
             }
             const time_t observed_at = time(nullptr);
             const uint32_t stack_free = uxTaskGetStackHighWaterMark(nullptr);
@@ -220,7 +254,7 @@ void worker(void *) {
             shared.worker_stack_free_bytes = stack_free;
             if (ok) {
                 result.valid = true;
-                result.received_ms = attempted[i];
+                result.received_ms = retries[i].attempted;
                 if (i == THAI_GOLD) {
                     const auto &previous = shared.readings[i];
                     result.history_count = previous.history_count;
@@ -239,14 +273,7 @@ void worker(void *) {
                 shared.readings[i] = result;
             } else {
                 // Keep last good values and source timestamps; mark them visibly stale/error.
-                shared.readings[i].failed = true;
-                shared.readings[i].error = result.error;
-                if (result.error == 429 && i >= SET) {
-                    for (int j = SET; j < COUNT; ++j) {
-                        shared.readings[j].failed = true;
-                        shared.readings[j].error = 429;
-                    }
-                }
+                mark_failure(static_cast<Source>(i), result.error);
             }
             ++shared.revision;
             portEXIT_CRITICAL(&snapshot_mux);
@@ -296,7 +323,11 @@ void append_observation(Reading &reading, time_t epoch, float value) {
 }
 
 bool begin() {
-    const bool ok = xTaskCreatePinnedToCore(worker, "api_worker", 12288, nullptr, 1, nullptr, 0) == pdPASS;
+    // Preemptible idle-priority background work shares CPU0 with IDLE0 even inside
+    // framework/TLS calls that do not reach our cooperative stream polling.
+    static_assert(configUSE_PREEMPTION == 1 && configUSE_TIME_SLICING == 1,
+        "API idle-priority scheduling requires preemption and time slicing");
+    const bool ok = xTaskCreatePinnedToCore(worker, "api_worker", 12288, nullptr, tskIDLE_PRIORITY, nullptr, 0) == pdPASS;
     portENTER_CRITICAL(&snapshot_mux);
     shared.worker_ok = ok;
     portEXIT_CRITICAL(&snapshot_mux);

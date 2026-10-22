@@ -4,7 +4,7 @@
 | Part | Model | Interface | Notes |
 |---|---|---|---|
 | MCU | ESP32-WROOM-32E | USB UART | บอร์ด HW-458 |
-| Display | ILI9341 (ยืนยันแล้ว) | HSPI 14/13/12 CS15 DC2 | landscape 320x240 rotation 1, BL21 |
+| Display | ILI9341 (ยืนยันแล้ว) | HSPI 14/13/12 CS15 DC2 | landscape 320x240 display rotation 3 (180° from previous), BL21 |
 | Touch | XPT2046 (pin map provisional) | VSPI CLK25/MISO39/MOSI32 CS33 | IRQ36 ไม่ใช้เป็น gate; อ่าน pressure polling |
 
 ## Libraries
@@ -19,7 +19,7 @@
 | Time | ESP32 SNTP / time.h | implemented | Bangkok UTC+7, pool.ntp.org / time.google.com; valid clock required before HTTPS |
 | JSON | ArduinoJson 6.21.5 | pinned/implemented | filtered 6KiB document + filter1.5KiB, strict missing/schema validation |
 | HTTPS | framework HTTPClient / WiFiClientSecure | implemented | verified PEM roots src/api_roots.h; no insecure mode |
-| Network worker | framework FreeRTOS | implemented | core0 stack12KB priority1, POD snapshot portMUX; TFT/touch UI thread only |
+| Network worker | framework FreeRTOS | implemented | core0 stack12KB priority0 (idle/time-sliced), POD snapshot portMUX; TFT/touch UI thread only |
 
 ## Datasheet / References
 - https://github.com/Bodmer/TFT_eSPI
@@ -45,7 +45,7 @@ Dashboard LVGL8.3.11 ตลาดไทย5หน้า ปัดซ้าย/�
 
 SingleRGB565320x8buffer5120bytes + LVGL24KiBpool static ไม่มีfullscreensprite/PSRAM ไม่ใช้GFXfontเป็นLVGLfont Montserrat18/26builtinเท่านั้น initializeหลังgate mainเป็นผู้เรียกLVGL/TFTทั้งหมด hideก่อนsetup หยุดtimer/flushขณะsetup Workerไม่มีจอ/ทัช
 
-Latest build cyd_ili9341: flash1,177,261/1,310,720bytes (89.8%), staticRAM85,812/327,680bytes (26.2%); ไม่รวมTLS/body24KiB/JSON6KiB/filter1.5KiB/workerstack12KiBและruntimeheap ไม่เคยตรวจflashcapacityจริง ค่าesp32dev4MBเป็นconfig ไม่เปลี่ยนpartition/ไม่เลือกnoOTA/ไม่flash
+Latest build cyd_ili9341: flash1,180,409/1,310,720bytes (90.1%), staticRAM85,812/327,680bytes (26.2%); ไม่รวมTLS/body24KiB/JSON6KiB/filter1.5KiB/workerstack12KiBและruntimeheap ไม่เคยตรวจflashcapacityจริง ค่าesp32dev4MBเป็นconfig ไม่เปลี่ยนpartition/ไม่เลือกnoOTA/ไม่flash
 
 APIverified2026-10-14: 9URLs HTTP200withfirmwareCA YahooSET1historypoint vsอีก5หุ้น22points; oil12productsครบ keysptt/pt/bcp BCPdiesel=disel ไม่ทดแทนmissing; goldobservedSELL collector RAM32points/15minยังอยู่ แต่หน้าทองตัดกราฟออกแล้ว ใช้ราคา7segments44px/UPDATED26pxและfullsource stamp18px StocksTHB/SETpoints goldTHB/bahtweight oilTHB/L ไม่มีราคาตลาดโลกแล้ว อ่านREADME/projectสำหรับcoverageและrate limits
 
@@ -62,3 +62,11 @@ NVSเป็นplaintext ไม่เปิดflash/NVSencryption Physicalflasha
 Weather latest target30fps rational34/33/33ms ไม่มีdrift displaytimerreadyก่อนsinglehandler แก้LVGL20msquantizationโดยไม่เปลี่ยนglobalperiod Cloud drift±8/6.5px bob±2.6/2.3px squash/stretch6s independentlobes3/4/5s WeatherPose48bytesstatic ไม่มีallocationต่อframe Serialhแสดงscheduled/presented-roi FPS window>=2s นับlastSPIchunkเฉพาะrefreshภายใน117x94ทั้งหมด แยกmixed/skipped ไม่ใช่physicalLCDscanrate Warmupwindow0 hiddenactive0 NativeLVGL60completions/2sตรงdeadline/late14skips/morph/clip/poolผ่าน Latestloop256 tick48 show32bytes UImax256/8192loopstackเดิม SPI27MHz/bufferเดิม
 
 ยังไม่ได้ทดสอบรุ่นโลโก้ใหม่/30fps-target/แก้stackบนบอร์ดจริง หากไม่มีtouchresponseให้ตรวจVSPIpinmapก่อน หากแตะไม่ตรงให้วัดraw/ตรวจแกนแล้วคาลิเบรตใหม่ คงGPIO36ไม่มีinternalpull-up ไม่มีการแก้pinmap/pressureแบบเดา
+
+Display orientation: TFT rotation3 สำหรับทุกหน้า; XPT2046 rotation1 และ NVS affine/profile/versionเดิมยังเป็นcanonical rotation1 แปลงพิกัดหลังmap/clampเป็น(319-x,239-y)ก่อนUI เป้าคาลิเบรตใหม่วาดที่ตำแหน่งกลับด้านตามcanonicalcorner ไม่เปลี่ยนrawclassifier/fit ไม่ต้องลบหรือคาลิเบรตค่าเก่าใหม่ Swipeใช้พิกัดหน้าจอปัจจุบัน
+
+2026-10-22 IDLE0 watchdog: SHA-matched ELF preserved/decoded (project.md). CooperativeTLS blocks at least1tick every>=2ms polling work across HTTP Stream header retries; 20s request poll deadline plus bounded body8s/24KiB, socket3s/Stream100ms, rejects unexpected chunked response instead of parsing framing. TLS CA unchanged. api_worker priority1/core0/12KiB unchanged; compilerframe2896bytes runtimeTLSheadroomunknown. Perendpoint APIphase logs reveal stalls without secrets. Root candidate evidenced framework timedRead busyspin; exact hardware PC unknown. No watchdogdisable/reset/timeoutincrease or orientation/NVS edits.
+
+2026-10-22 watchdogfollow-up supersedespriorpolling-onlyfix: workerpriority0เท่าIDLE0/SDKpreemption+timeslicing1/IDLE_SHOULD_YIELD0 ไม่เปลี่ยนwatchdog พร้อมoverrideHTTPconnecthost2/3args แยกDNSและTCP-TLSphase OriginalSNI/CAคงเดิม DNSframeworkมี16+15sblockingwaitไม่มีtimeoutargument (ไม่รับรอง20sharddeadline) Workerframe2960bytes stack12KiBต้องวัดruntime Retryรายsource30/60s then circuit>=5min cap15min successreset; failคงrealcachedRAMหรือ-- ไม่มีfallbackendpoint/ราคาทดแทน/เพิ่มNVSwrite UI/rotation3/touchcanonical1เดิม
+
+2026-10-22 TLSfollow-up: userlogไม่มีwatchdog/Yahooผ่าน แต่weather/gold/oilstart_ssl_client=-1 DNSผ่าน sixargumentconnectส่งhostname/SNIถูกอยู่แล้ว ไม่เปลี่ยนCA HostexactPEM+directTLS1.2และ9HTTPschemasผ่าน TargetedAPI0..2handshake20s/budget35s (เดิม5/20s); Yahoo5/20เดิม TCP4s/socket3s/body8sเดิม Generic-1ยังไม่ยืนยันcause เพิ่มlastErrorcode/hex/text+epoch+free/largestheapก่อนhandshake NativeSNI/CA/error/budgettestsผ่าน Workerframe2976/12KiB ไม่เพิ่มstack UIloop256/tick48/show32 Nativeผลไม่รับรองhardwareTLSต้องทดสอบต่อ ไม่มีflash/erase

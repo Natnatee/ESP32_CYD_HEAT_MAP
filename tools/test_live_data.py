@@ -56,7 +56,7 @@ std::mutex snapshot_mux;
 #define portENTER_CRITICAL(mux) (mux)->lock()
 #define portEXIT_CRITICAL(mux) (mux)->unlock()
 '''
-harness += "\n".join(function(DATA, name) for name in ("parse_price", "number", "price", "decode", "stale", "append_observation", "copy_snapshot", "diagnostics"))
+harness += "\n".join(function(DATA, name) for name in ("parse_price", "number", "price", "decode", "stale", "append_observation", "copy_snapshot", "diagnostics", "mark_failure"))
 harness += r'''
 void check_decode() {
     float value=0;
@@ -113,6 +113,22 @@ void check_decode() {
     append_observation(r,1790000000,999); append_observation(r,1790035100,999);
     assert(r.history_count==32 && r.history[31].price==65039); // Duplicate/reversed timestamp rejected.
     append_observation(r,1790040000,-1); assert(r.history_count==32);
+}
+void check_fallback() {
+    shared={};
+    auto &weather=shared.readings[WEATHER];
+    weather.valid=true;weather.values[0]=29.5f;weather.received_ms=123;
+    strcpy(weather.source_time,"original stamp");
+    weather.history_count=1;weather.history[0]={1704067200,29.5f};
+    mark_failure(WEATHER,-25);
+    assert(weather.valid && weather.failed && weather.values[0]==29.5f && weather.received_ms==123);
+    assert(!strcmp(weather.source_time,"original stamp") && weather.history_count==1);
+    assert(!shared.readings[THAI_OIL].failed); // One failed endpoint cannot poison another.
+    mark_failure(THAI_GOLD,-1);
+    assert(!shared.readings[THAI_GOLD].valid && shared.readings[THAI_GOLD].failed);
+    mark_failure(PTT,429);
+    for(int i=SET;i<COUNT;++i) assert(shared.readings[i].failed && shared.readings[i].error==429);
+    shared={};
 }
 void check_snapshot() {
     static_assert(std::is_same<decltype(&copy_snapshot),void (*)(Snapshot &)>::value,
@@ -178,6 +194,7 @@ harness += r'''
 void poll(bool down,int count=1){touch.point.z=down?400:0;for(int i=0;i<count;++i)poll_touch(tick+=20);}
 int main(){
     live_data::check_decode();
+    live_data::check_fallback();
     live_data::check_snapshot();
     poll(true,2); assert(keys==1);
     screen=Screen::DASHBOARD;dashboard_touch_armed=false;

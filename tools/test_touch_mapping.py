@@ -62,7 +62,7 @@ float raw_x(float x, float y) { return 300 + 10*x + 0.1f*y; }
 float raw_y(float x, float y) { return 200 + 0.2f*x + 14*y; }
 void check_pixel(int expected_x, int expected_y) {
     int x=-1,y=-1;
-    assert(map_touch(lroundf(raw_x(expected_x,expected_y)), lroundf(raw_y(expected_x,expected_y)),x,y));
+    assert(map_touch(lroundf(raw_x(319-expected_x,239-expected_y)), lroundf(raw_y(319-expected_x,239-expected_y)),x,y));
     assert(x==expected_x && y==expected_y);
 }
 int main() {
@@ -74,14 +74,18 @@ int main() {
     }
     assert(raw_corner(2000,2000)==-1);
     assert(fit_calibration());
-    for (int i=0;i<4;++i) check_pixel(CORNER_X[i],CORNER_Y[i]);
+    // Fresh calibration: each canonical corner is drawn at the opposite display corner.
+        for (int i=0;i<4;++i) check_pixel(319-CORNER_X[i],239-CORNER_Y[i]);
+        // Reusing a pre-rotation saved affine fit must give exactly the same UI mapping.
+        const Calibration saved=calibration;
+        calibration={}; calibration=saved;
     for (int y : {0,1,120,238,239}) for (int x : {0,1,160,318,319}) check_pixel(x,y);
     int x,y;
     // Old +-12px rejection dropped these otherwise valid ADC samples.
-    assert(map_touch(lroundf(raw_x(-20,120)),lroundf(raw_y(-20,120)),x,y) && x==0);
-    assert(map_touch(lroundf(raw_x(339,120)),lroundf(raw_y(339,120)),x,y) && x==319);
-    assert(map_touch(lroundf(raw_x(160,-14)),lroundf(raw_y(160,-14)),x,y) && y==0);
-    assert(map_touch(lroundf(raw_x(160,253)),lroundf(raw_y(160,253)),x,y) && y==239);
+    assert(map_touch(lroundf(raw_x(-20,120)),lroundf(raw_y(-20,120)),x,y) && x==319);
+    assert(map_touch(lroundf(raw_x(339,120)),lroundf(raw_y(339,120)),x,y) && x==0);
+    assert(map_touch(lroundf(raw_x(160,-14)),lroundf(raw_y(160,-14)),x,y) && y==239);
+    assert(map_touch(lroundf(raw_x(160,253)),lroundf(raw_y(160,253)),x,y) && y==0);
     assert(!map_touch(0,2000,x,y));
     assert(!map_touch(4095,2000,x,y));
     int rectangles=0;
@@ -92,7 +96,7 @@ int main() {
             assert(r.x>=0 && r.x+r.w<=320 && r.y+r.h<=240);
             for(int py : {r.y,r.y+r.h-1}) for(int px : {r.x,r.x+r.w-1}) {
                 check_pixel(px,py);
-                assert(map_touch(lroundf(raw_x(px,py)),lroundf(raw_y(px,py)),x,y));
+                assert(map_touch(lroundf(raw_x(319-px,239-py)),lroundf(raw_y(319-px,239-py)),x,y));
                 assert(inside(x,y,r.x,r.y,r.w,r.h));
             }
             ++rectangles;
@@ -105,7 +109,7 @@ int main() {
     assert(!fit_calibration());
     calibration.valid=false;
     assert(!map_touch(2000,2000,x,y));
-    std::printf("PASS: circle centers, skew fit, screen-edge extrapolation/clamp, %d key rectangles, invalid fits.\n",rectangles);
+    std::printf("PASS: rotation-3 fresh/saved canonical calibration, circle centers, skew fit, screen-edge extrapolation/clamp, %d key rectangles, invalid fits.\n",rectangles);
 }
 '''
 with tempfile.TemporaryDirectory(prefix="cyd-touch-test-") as folder:

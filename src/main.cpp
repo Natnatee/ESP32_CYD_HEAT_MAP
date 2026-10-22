@@ -82,7 +82,8 @@ void rounded_stroke(int x1, int y1, int x2, int y2, uint16_t color, int radius =
         tft.fillCircle(x1 + (x2 - x1) * i / max(steps, 1), y1 + (y2 - y1) * i / max(steps, 1), radius, color);
 }
 void draw_corner_target(int corner) {
-    int x = CORNER_X[corner], y = CORNER_Y[corner];
+    // Targets retain canonical rotation-1 identities for old and newly saved fits.
+        int x = 319 - CORNER_X[corner], y = 239 - CORNER_Y[corner];
     int sx = x < 160 ? 1 : -1, sy = y < 120 ? 1 : -1;
     uint16_t color = corner_done[corner] ? TFT_GREEN : TFT_WHITE;
     tft.drawCircle(x, y, TARGET_RADIUS, color);
@@ -101,7 +102,7 @@ void draw_calibration() {
     ui_text("of circles", 160, 137, &nunito_26, TFT_WHITE, TFT_BLACK, MC_DATUM);
 }
 uint32_t calibration_profile() {
-    // Invalidate stored mapping if screen/targets/pins/orientation assumptions change.
+    // Fingerprint canonical touch geometry, not display rotation: preserve existing NVS fits.
     const int geometry[] = {320, 240, 1, TOUCH_CS, 25, 39, 32, TOUCH_RAW_MIN, TOUCH_RAW_MAX,
         CORNER_X[0], CORNER_X[1], CORNER_X[2], CORNER_X[3],
         CORNER_Y[0], CORNER_Y[1], CORNER_Y[2], CORNER_Y[3]};
@@ -234,6 +235,9 @@ bool map_touch(int rx, int ry, int &x, int &y) {
     // Inset targets require extrapolation. Do not discard valid ADC touches near the edges.
     x = constrain(x, 0, 319);
     y = constrain(y, 0, 239);
+    // Raw touch and persisted affine fit stay rotation 1; rotate only final UI coordinates.
+    x = 319 - x;
+    y = 239 - y;
     return true;
 }
 
@@ -514,12 +518,12 @@ void setup() {
         pinMode(pin, OUTPUT);
     }
     tft.init();
-    tft.setRotation(1);
+    tft.setRotation(3);
     pinMode(21, OUTPUT);
     digitalWrite(21, HIGH);
     touch_spi.begin(25, 39, 32, TOUCH_CS);
     touch.begin(touch_spi);
-    touch.setRotation(1);
+    touch.setRotation(1); // Canonical raw coordinates: never invalidate saved fits for display rotation.
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(false);
