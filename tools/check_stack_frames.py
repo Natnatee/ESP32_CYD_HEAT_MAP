@@ -10,12 +10,11 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1] if "__file__" in globals() else Path.cwd()
 UI_LIMIT = 1024
-COPY_LIMIT = 256
 
 
 def inspect_frames(build_dir):
     frames = []
-    required = {"main.cpp", "dashboard.cpp", "live_data.cpp"}
+    required = {"main.cpp"}
     found = set()
     for path in Path(build_dir).rglob("*.su"):
         source = next((name for name in required if path.name.startswith(name + ".") or path.name == name[:-4] + ".su"), None)
@@ -31,17 +30,13 @@ def inspect_frames(build_dir):
             frames.append((source, function, int(size), kind))
     assert found == required, f"Missing .su reports for {required - found}; run pio run -e cyd_ili9341 with -fstack-usage"
     failures = []
-    watched = {"loop": False, "tick": False, "show": False, "copy": False, "diagnostics": False}
+    watched = {"loop": False}
     for source, function, size, kind in frames:
-        limit = UI_LIMIT if source in ("main.cpp", "dashboard.cpp") else None
-        if source == "live_data.cpp" and ("copy_snapshot(" in function or "diagnostics()" in function):
-            limit = COPY_LIMIT
+        limit = UI_LIMIT
         if limit is not None and (size > limit or ("dynamic" in kind and "bounded" not in kind)):
             failures.append(f"{source}: {function}: {size} bytes ({kind}), limit {limit}")
-        for key, match in (("loop", "void loop()"), ("tick", "dashboard::tick("), ("show", "dashboard::show("),
-                           ("copy", "live_data::copy_snapshot("), ("diagnostics", "live_data::diagnostics()")):
-            if match in function:
-                watched[key] = True
+        if "void loop()" in function:
+            watched["loop"] = True
     assert all(watched.values()), f"Missing required compiled functions: {watched}"
     assert not failures, "Stack frame regression:\n" + "\n".join(failures)
     return frames
@@ -50,12 +45,9 @@ def inspect_frames(build_dir):
 def report(build_dir):
     frames = inspect_frames(build_dir)
     for source, function, size, kind in frames:
-        if (source == "main.cpp" and "void loop()" in function) or any(
-            name in function for name in ("dashboard::tick(", "dashboard::show(", "live_data::copy_snapshot(", "live_data::diagnostics()")
-        ):
+        if "void loop()" in function:
             print(f"STACK {function}: {size} bytes ({kind})")
-    ui = [size for source, _, size, _ in frames if source in ("main.cpp", "dashboard.cpp")]
-    print(f"PASS: Xtensa application UI frames <= {UI_LIMIT} bytes (max {max(ui)}), snapshot copy/diagnostics <= {COPY_LIMIT}; loop stack size unchanged.")
+    print(f"PASS: main.cpp frames <= {UI_LIMIT} bytes (max {max(size for _, _, size, _ in frames)}).")
 
 
 def self_test():
@@ -63,10 +55,6 @@ def self_test():
         folder = Path(folder)
         main = folder / "main.cpp.su"
         main.write_text("src/main.cpp:1:1:void loop()\t96\tstatic\n", encoding="utf-8")
-        (folder / "dashboard.cpp.su").write_text("src/dashboard.cpp:1:1:void dashboard::tick(unsigned int)\t32\tstatic\n"
-                                                  "src/dashboard.cpp:2:1:void dashboard::show(unsigned char)\t32\tstatic\n", encoding="utf-8")
-        (folder / "live_data.cpp.su").write_text("src/live_data.cpp:1:1:void live_data::copy_snapshot(live_data::Snapshot&)\t32\tstatic\n"
-                                                 "src/live_data.cpp:2:1:live_data::Diagnostics live_data::diagnostics()\t32\tstatic\n", encoding="utf-8")
         inspect_frames(folder)
         # Actual offending frame size from the SHA-matched crash ELF must be rejected.
         main.write_text("src/main.cpp:1:1:void loop()\t3440\tstatic\n", encoding="utf-8")

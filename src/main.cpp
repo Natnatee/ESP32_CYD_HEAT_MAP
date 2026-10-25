@@ -7,8 +7,7 @@
 #include <math.h>
 #include <esp_heap_caps.h>
 #include "ui_fonts.h"
-#include "live_data.h"
-#include "dashboard.h"
+
 #include "saved_settings.h"
 
 namespace {
@@ -21,7 +20,7 @@ TFT_eSPI tft;
 SPIClass touch_spi(VSPI);
 // Poll pressure rather than relying on the provisional IRQ wiring.
 XPT2046_Touchscreen touch(TOUCH_CS);
-enum class Screen { CALIBRATION, WIFI, DASHBOARD };
+enum class Screen { CALIBRATION, WIFI, HOME };
 Screen screen = Screen::CALIBRATION;
 constexpr int CORNER_X[] = {25, 294, 294, 25};
 constexpr int CORNER_Y[] = {25, 25, 214, 214};
@@ -47,7 +46,8 @@ bool pressed_before = false;
 bool touch_diagnostics = false;
 uint32_t last_touch_diagnostic = 0;
 uint32_t last_touch = 0, last_animation = 0, connect_started = 0;
-uint8_t page = 0, spinner_phase = 0;
+uint8_t spinner_phase = 0;
+uint32_t last_clock_update = 0;
 bool connecting = false, password_field = false, uppercase = false, symbols = false;
 uint8_t symbol_page = 0;
 constexpr uint16_t WIFI_BG = TFT_BLACK, WIFI_KEY = 0x2104, WIFI_MUTED = 0xAD55;
@@ -56,7 +56,7 @@ constexpr int FIELD_H = 29, KEYBOARD_Y = 121, KEY_ROW_STEP = 31, KEY_H = 29;
 struct KeyRect { int x, y, w, h; };
 String ssid, password;
 const char *wifi_message = "";
-bool dashboard_touch_armed = false;
+bool home_touch_armed = false;
 
 
 bool inside(int x, int y, int bx, int by, int w, int h) {
@@ -119,8 +119,7 @@ void reset_corner_sample() {
     sample_rejected = false;
 }
 void start_calibration() {
-    dashboard::hide();
-    dashboard_touch_armed = false;
+    home_touch_armed = false;
     WiFi.disconnect(false, false);
     connecting = false;
     screen = Screen::CALIBRATION;
@@ -311,11 +310,10 @@ void draw_wifi() {
     } else draw_keyboard();
 }
 void show_gate(const char *message) {
-    dashboard::hide();
     screen = Screen::WIFI;
     connecting = false;
     wifi_message = message;
-    dashboard_touch_armed = false;
+    home_touch_armed = false;
     draw_wifi();
 }
 void begin_connect() {
@@ -349,7 +347,7 @@ void restore_startup() {
     if (saved_settings::load_calibration(stored, calibration_profile())) {
         calibration = {stored.ox, stored.oy, stored.ux, stored.uy, stored.vx, stored.vy, true};
         pressed_before = false;
-        dashboard_touch_armed = false;
+        home_touch_armed = false;
         enter_wifi();
     } else start_calibration(); // Missing/corrupt/incompatible record: original circle workflow.
 }
@@ -415,14 +413,30 @@ void wifi_tap(int x, int y) {
     } else if (touch_diagnostics) Serial.printf("Touch: no WiFi hit at %d,%d\n", x, y);
 }
 
-void draw_dashboard() {
-    if (WiFi.status() != WL_CONNECTED) { show_gate("WiFi lost. Reconnect."); return; }
-    screen = Screen::DASHBOARD;
-    if (!dashboard::begin(tft)) { show_gate("UI memory unavailable"); return; }
-    dashboard::show(page);
+void update_clock() {
+    const time_t now = time(nullptr);
+    const bool valid = now >= 1704067200;
+    char clock_text[16] = "--:--:--", date_text[32] = "Waiting for NTP...";
+    if (valid) {
+        struct tm local{};
+        localtime_r(&now, &local);
+        strftime(clock_text, sizeof(clock_text), "%H:%M:%S", &local);
+        strftime(date_text, sizeof(date_text), "%a %d/%m/%Y", &local);
+    }
+    tft.fillRect(0, 62, 320, 112, TFT_BLACK);
+    ui_text(clock_text, 160, 96, &nunito_26, TFT_WHITE, TFT_BLACK, MC_DATUM);
+    ui_text(date_text, 160, 137, &nunito_18, WIFI_MUTED, TFT_BLACK, MC_DATUM);
 }
-void next_page() {
-    if (screen == Screen::DASHBOARD && WiFi.status() == WL_CONNECTED) dashboard::next();
+void draw_home() {
+    screen = Screen::HOME;
+    home_touch_armed = false;
+    tft.fillScreen(TFT_BLACK);
+    ui_text("CYD Starter", 160, 24, &nunito_26, TFT_WHITE, TFT_BLACK, MC_DATUM);
+    ui_text("Bangkok / UTC+7", 160, 180, &nunito_18, WIFI_MUTED, TFT_BLACK, MC_DATUM);
+    ui_button(4, 207, 152, 30, "WiFi");
+    ui_button(164, 207, 152, 30, "Calibrate");
+    update_clock();
+    last_clock_update = millis();
 }
 void poll_touch(uint32_t now) {
     if (now - last_touch < 20) return;
@@ -459,19 +473,20 @@ void poll_touch(uint32_t now) {
         up_samples = min(3, int(up_samples) + 1);
         if (up_samples >= 3) pressed = false;
     }
-    // Arm only after a full release on the dashboard. A Connect hold cannot turn a page.
-    if (screen == Screen::DASHBOARD && !pressed && up_samples >= 3) dashboard_touch_armed = true;
+    // Require release after Connect before enabling home buttons.
+    if (screen == Screen::HOME && !pressed && up_samples >= 3) home_touch_armed = true;
     // A single low-pressure read must not release a held key.
     if (pressed && !pressed_before) {
         int x, y;
         if (map_touch(point.x, point.y, x, y)) {
             if (screen == Screen::WIFI) wifi_tap(x, y);
+            else if (screen == Screen::HOME && home_touch_armed) {
+                if (inside(x, y, 4, 207, 152, 30)) {
+                    WiFi.disconnect(false, false);
+                    show_gate("");
+                } else if (inside(x, y, 164, 207, 152, 30)) force_recalibration();
+            }
         }
-    }
-    if (screen == Screen::DASHBOARD) {
-        static int dashboard_x = 0, dashboard_y = 0;
-        if (raw_pressed) map_touch(point.x, point.y, dashboard_x, dashboard_y);
-        dashboard::touch(pressed && dashboard_touch_armed, dashboard_x, dashboard_y);
     }
     pressed_before = pressed;
 }
@@ -481,7 +496,7 @@ void update_network(uint32_t now) {
         return;
     }
     wl_status_t status = WiFi.status();
-    if (screen == Screen::DASHBOARD && status != WL_CONNECTED) {
+    if (screen == Screen::HOME && status != WL_CONNECTED) {
         WiFi.disconnect(false, false);
         show_gate("WiFi lost. Reconnect.");
     } else if (connecting) {
@@ -491,9 +506,8 @@ void update_network(uint32_t now) {
                 Serial.println("WiFi NVS save failed; connection remains usable this boot.");
             connecting = false;
             configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
-            page = 3; // Useful weather first while finance arrives sequentially.
-            dashboard_touch_armed = false;
-            draw_dashboard();
+            home_touch_armed = false;
+            draw_home();
         } else if (now - connect_started >= CONNECT_TIMEOUT) {
             WiFi.disconnect(false, false);
             show_gate("Check WiFi / password. Retry.");
@@ -528,9 +542,8 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(false);
     WiFi.disconnect(false, false);
-    Serial.println("CYD LVGL Desk / c=forget calibration, w=forget WiFi, t=touch diagnostics, h=heap, n=next. Credentials stored in plaintext NVS, never logged.");
+    Serial.println("CYD Starter / c=forget calibration, w=forget WiFi, t=touch diagnostics, h=heap. Credentials stored in plaintext NVS, never logged.");
     Serial.println("Touch pins provisional; begin() is not chip detection. Pressure polling, fixed rotation 1.");
-    if (!live_data::begin()) Serial.println("API worker unavailable; dashboard will show an error.");
     restore_startup();
 }
 
@@ -539,18 +552,11 @@ void loop() {
         char command = Serial.read();
         if (command == 'c') force_recalibration();
         else if (command == 'w') forget_saved_wifi();
-        else if (command == 'n') next_page();
         else if (command == 'h') {
-            const auto stats = live_data::diagnostics(); // Small metadata only, no history arrays.
-            Serial.printf("Heap free=%u min=%u largest8bit=%u loop-stack-min-free=%u API-stack-min-free=%u bytes (0 API=not measured yet)\n",
+            Serial.printf("Heap free=%u min=%u largest8bit=%u loop-stack-min-free=%u bytes\n",
                 ESP.getFreeHeap(), ESP.getMinFreeHeap(),
                 unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
-                unsigned(uxTaskGetStackHighWaterMark(nullptr)), unsigned(stats.worker_stack_free_bytes));
-            const auto weather = dashboard::weather_stats();
-            Serial.printf("Weather target=30 scheduled=%u.%u presented-roi=%u.%u fps window=%ums skipped=%u mixed=%u active=%u (SPI completion, 0ms=warming)\n",
-                unsigned(weather.scheduled_fps_x10 / 10), unsigned(weather.scheduled_fps_x10 % 10),
-                unsigned(weather.presented_roi_fps_x10 / 10), unsigned(weather.presented_roi_fps_x10 % 10),
-                unsigned(weather.window_ms), unsigned(weather.skipped_slots), unsigned(weather.mixed_refreshes), unsigned(weather.active));
+                unsigned(uxTaskGetStackHighWaterMark(nullptr)));
         }
         else if (command == 't') {
             touch_diagnostics = !touch_diagnostics;
@@ -560,5 +566,9 @@ void loop() {
     uint32_t now = millis();
     update_network(now);
     poll_touch(now);
-    if (screen == Screen::DASHBOARD) dashboard::tick(now);
+    if (screen == Screen::HOME && now - last_clock_update >= 1000) {
+        last_clock_update = now;
+        update_clock();
+    }
+    delay(1); // Yield to the Wi-Fi/RTOS tasks; all UI scheduling uses millis().
 }

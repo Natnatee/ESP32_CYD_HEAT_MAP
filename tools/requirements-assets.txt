@@ -1,3 +1,2 @@
-# Developer-only, for reproducible SVG -> RGB565 generation. Not firmware/runtime deps.
-resvg-py==0.2.5
+# Developer-only font regeneration; not required to build firmware.
 Pillow==11.0.0
