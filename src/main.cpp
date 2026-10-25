@@ -7,6 +7,10 @@
 #include <math.h>
 #include <esp_heap_caps.h>
 #include "ui_fonts.h"
+#include "map_ui.h"
+#include "map_data.h"
+#include "map_math.h"
+#include "reconnect_policy.h"
 
 #include "saved_settings.h"
 
@@ -47,7 +51,9 @@ bool touch_diagnostics = false;
 uint32_t last_touch_diagnostic = 0;
 uint32_t last_touch = 0, last_animation = 0, connect_started = 0;
 uint8_t spinner_phase = 0;
-uint32_t last_clock_update = 0;
+int gesture_x=0, gesture_y=0, gesture_last_x=0, gesture_last_y=0, gesture_move=0;
+uint32_t gesture_started=0;
+bool gesture_active=false;
 bool connecting = false, password_field = false, uppercase = false, symbols = false;
 uint8_t symbol_page = 0;
 constexpr uint16_t WIFI_BG = TFT_BLACK, WIFI_KEY = 0x2104, WIFI_MUTED = 0xAD55;
@@ -413,30 +419,13 @@ void wifi_tap(int x, int y) {
     } else if (touch_diagnostics) Serial.printf("Touch: no WiFi hit at %d,%d\n", x, y);
 }
 
-void update_clock() {
-    const time_t now = time(nullptr);
-    const bool valid = now >= 1704067200;
-    char clock_text[16] = "--:--:--", date_text[32] = "Waiting for NTP...";
-    if (valid) {
-        struct tm local{};
-        localtime_r(&now, &local);
-        strftime(clock_text, sizeof(clock_text), "%H:%M:%S", &local);
-        strftime(date_text, sizeof(date_text), "%a %d/%m/%Y", &local);
-    }
-    tft.fillRect(0, 62, 320, 112, TFT_BLACK);
-    ui_text(clock_text, 160, 96, &nunito_26, TFT_WHITE, TFT_BLACK, MC_DATUM);
-    ui_text(date_text, 160, 137, &nunito_18, WIFI_MUTED, TFT_BLACK, MC_DATUM);
-}
+ReconnectPolicy reconnect_policy;
 void draw_home() {
+    reconnect_policy.reset();
     screen = Screen::HOME;
     home_touch_armed = false;
-    tft.fillScreen(TFT_BLACK);
-    ui_text("CYD Starter", 160, 24, &nunito_26, TFT_WHITE, TFT_BLACK, MC_DATUM);
-    ui_text("Bangkok / UTC+7", 160, 180, &nunito_18, WIFI_MUTED, TFT_BLACK, MC_DATUM);
-    ui_button(4, 207, 152, 30, "WiFi");
-    ui_button(164, 207, 152, 30, "Calibrate");
-    update_clock();
-    last_clock_update = millis();
+    gesture_active = false;
+    map_ui::enter(tft);
 }
 void poll_touch(uint32_t now) {
     if (now - last_touch < 20) return;
@@ -473,19 +462,35 @@ void poll_touch(uint32_t now) {
         up_samples = min(3, int(up_samples) + 1);
         if (up_samples >= 3) pressed = false;
     }
-    // Require release after Connect before enabling home buttons.
+    // Require release after Connect before enabling map gestures.
     if (screen == Screen::HOME && !pressed && up_samples >= 3) home_touch_armed = true;
+    if (screen == Screen::HOME && home_touch_armed) {
+        int x, y;
+        if (raw_pressed && pressed && map_touch(point.x, point.y, x, y)) {
+            if (!pressed_before) {
+                gesture_x=gesture_last_x=x; gesture_y=gesture_last_y=y;
+                gesture_move=0; gesture_started=now; gesture_active=true;
+            }
+            if (gesture_active) {
+                gesture_last_x=x; gesture_last_y=y;
+                gesture_move=max(gesture_move,max(abs(x-gesture_x),abs(y-gesture_y)));
+            }
+        }
+        if (!pressed && pressed_before && gesture_active) {
+            gesture_active=false;
+            auto action=heat_map::gesture(gesture_last_x-gesture_x,gesture_last_y-gesture_y,
+                                          gesture_move,now-gesture_started);
+            if (action==heat_map::Gesture::LEFT || action==heat_map::Gesture::RIGHT)
+                map_ui::swipe(tft,action==heat_map::Gesture::LEFT);
+
+        }
+    } else gesture_active=false;
     // A single low-pressure read must not release a held key.
     if (pressed && !pressed_before) {
         int x, y;
         if (map_touch(point.x, point.y, x, y)) {
             if (screen == Screen::WIFI) wifi_tap(x, y);
-            else if (screen == Screen::HOME && home_touch_armed) {
-                if (inside(x, y, 4, 207, 152, 30)) {
-                    WiFi.disconnect(false, false);
-                    show_gate("");
-                } else if (inside(x, y, 164, 207, 152, 30)) force_recalibration();
-            }
+
         }
     }
     pressed_before = pressed;
@@ -496,9 +501,15 @@ void update_network(uint32_t now) {
         return;
     }
     wl_status_t status = WiFi.status();
-    if (screen == Screen::HOME && status != WL_CONNECTED) {
-        WiFi.disconnect(false, false);
-        show_gate("WiFi lost. Reconnect.");
+    if (screen == Screen::HOME) {
+        auto action=reconnect_policy.tick(now,status==WL_CONNECTED);
+        if (action==ReconnectPolicy::START) {
+            Serial.println("WiFi offline: starting bounded reconnect.");
+            WiFi.begin(ssid.c_str(),password.isEmpty() ? nullptr : password.c_str());
+        } else if (action==ReconnectPolicy::STOP) {
+            WiFi.disconnect(false,false);
+            Serial.println("WiFi reconnect timed out; backing off, retaining map/settings.");
+        }
     } else if (connecting) {
         if (status == WL_CONNECTED && WiFi.SSID() == ssid) {
             // Fields cannot be edited during an attempt. Failed/Cancel/loss paths never write.
@@ -557,6 +568,7 @@ void loop() {
                 ESP.getFreeHeap(), ESP.getMinFreeHeap(),
                 unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
                 unsigned(uxTaskGetStackHighWaterMark(nullptr)));
+            map_data::diagnostics();
         }
         else if (command == 't') {
             touch_diagnostics = !touch_diagnostics;
@@ -566,9 +578,6 @@ void loop() {
     uint32_t now = millis();
     update_network(now);
     poll_touch(now);
-    if (screen == Screen::HOME && now - last_clock_update >= 1000) {
-        last_clock_update = now;
-        update_clock();
-    }
+    if (screen == Screen::HOME) map_ui::tick(tft);
     delay(1); // Yield to the Wi-Fi/RTOS tasks; all UI scheduling uses millis().
 }

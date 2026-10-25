@@ -74,6 +74,16 @@ harness = r'''
 #include <cstring>
 #include <string>
 #include "saved_settings.cpp"
+#include "map_math.h"
+#include "reconnect_policy.h"
+ReconnectPolicy reconnect_policy;
+namespace map_ui {
+int left_swipes=0,right_swipes=0;
+template<typename T> void swipe(T &,bool left){if(left)++left_swipes;else ++right_swipes;}
+}
+int gesture_x=0,gesture_y=0,gesture_last_x=0,gesture_last_y=0,gesture_move=0;
+uint32_t gesture_started=0;
+bool gesture_active=false;
 
 using std::min;
 using std::max;
@@ -138,7 +148,7 @@ void draw_corner_target(int){}
 void draw_wifi(){++wifi_draws;}
 void draw_wifi_status(){}
 void configTime(int,int,const char *,const char *) {++ntp_calls;}
-void draw_home() {assert(WiFi.status()==WL_CONNECTED);screen=Screen::HOME;}
+void draw_home() {assert(WiFi.status()==WL_CONNECTED);reconnect_policy.reset();screen=Screen::HOME;}
 '''
 for name in ("inside", "calibration_profile", "reset_corner_sample", "start_calibration", "fit_calibration", "accept_corner",
              "show_gate", "begin_connect", "enter_wifi", "restore_startup", "force_recalibration", "forget_saved_wifi", "update_network", "map_touch", "poll_touch"):
@@ -232,7 +242,15 @@ void test_startup() {
     assert(writes==2 && records["cal"]==good_cal && records["wifi"]==good_wifi);
     WiFi.confirm();update_network(tick+3);assert(screen==Screen::HOME && writes==2); // Boot success: unchanged, no write.
     WiFi.disconnect(false,false);update_network(tick+4);
-    assert(screen==Screen::WIFI && !connecting && records["wifi"]==good_wifi);
+    assert(screen==Screen::HOME && !connecting && records["wifi"]==good_wifi);
+    int attempts=WiFi.attempts;
+    update_network(tick+20003);assert(WiFi.attempts==attempts && screen==Screen::HOME);
+    update_network(tick+20004);assert(!reconnect_policy.active && screen==Screen::HOME);
+    update_network(tick+25003);assert(WiFi.attempts==attempts);
+    update_network(tick+25004);assert(WiFi.attempts==attempts+1);
+    WiFi.confirm();update_network(tick+25005);
+    assert(screen==Screen::HOME && !reconnect_policy.active && writes==2 && records["wifi"]==good_wifi);
+    show_gate("");
     password="failed-fixture";begin_connect();tick+=CONNECT_TIMEOUT;update_network(tick);
     assert(screen==Screen::WIFI && !connecting && password=="failed-fixture" && records["wifi"]==good_wifi && writes==2);
     restore_startup();assert(connecting && password=="fixture-pass");
@@ -278,9 +296,29 @@ void test_restored_touch_gate() {
     poll(false,3);assert(home_touch_armed);
     poll(true,2);poll(false,3);assert(screen==Screen::HOME);
 }
+void pixel(int x,int y) {
+    touch.point.x=lroundf(500+(319-x-25)*2700.0f/269);
+    touch.point.y=lroundf(500+(239-y-25)*2700.0f/189);
+}
+void test_home_gestures() {
+    assert(screen==Screen::HOME && home_touch_armed);
+    // Swipes in the former bottom control area still select map pages.
+    pixel(140,220);poll(true,2);pixel(60,220);poll(true,2);poll(false,3);
+    assert(screen==Screen::HOME && map_ui::left_swipes==1);
+    pixel(60,120);poll(true,2);pixel(140,120);poll(true,2);poll(false,3);
+    assert(screen==Screen::HOME && map_ui::right_swipes==1);
+    // Drag out and back is not a tap.
+    pixel(50,220);poll(true,2);pixel(130,220);poll(true,2);
+    pixel(50,220);poll(true,2);poll(false,3);assert(screen==Screen::HOME);
+    pixel(50,220);poll(true,2);assert(screen==Screen::HOME);
+    poll(false,3);assert(screen==Screen::HOME && !connecting);
+    poll(false,3);
+    pixel(240,220);poll(true,2);assert(screen==Screen::HOME);
+    poll(false,3);assert(screen==Screen::HOME && calibration.valid);
+}
 int main() {
-    test_codec();test_startup();test_restored_touch_gate();
-    puts("PASS: actual Preferences codec + firmware fit/save/startup/auto-connect/timeout/loss/forget flows, versions/CRC/geometry/lengths/truncation, no repeated/failed-attempt writes, open/max-length credentials, save/erase failures, no secret logs.");
+    test_codec();test_startup();test_restored_touch_gate();test_home_gestures();
+    puts("PASS: actual Preferences codec + firmware fit/save/startup/auto-connect/timeout/loss/forget flows, versions/CRC/geometry/lengths/truncation, no repeated/failed-attempt writes, open/max-length credentials, save/erase failures, no secret logs; bounded Home reconnect/recovery without NVS writes, bottom-area swipes, drag-back rejection and removed control taps.");
 }
 '''
 assert 'WiFi.persistent(false)' in MAIN
